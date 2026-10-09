@@ -602,10 +602,14 @@ SINGLE_TRANSLATE_ENGINES: list[dict[str, str]] = [
     {"id": "", "name": "Current engine", "needs_key": ""},
     {"id": "local_llm", "name": "\U0001F999 Local LLM", "needs_key": ""},
     {"id": "hy_mt2", "name": "\U0001F238 Hy-MT2 (Local)", "needs_key": ""},
-    {"id": "openai", "name": "\U0001F916 OpenAI", "needs_key": "openai_api_key"},
-    {"id": "deepseek", "name": "\U0001F30A DeepSeek", "needs_key": "deepseek_api_key"},
-    {"id": "gemini", "name": "\u2728 Google Gemini", "needs_key": "gemini_api_key"},
-    {"id": "deepl", "name": "\U0001F3AF DeepL (Free or Pro)", "needs_key": "deepl_api_key"},
+    {"id": "openai", "name": "\U0001F916 OpenAI", "needs_key": "openai_api_key",
+     "setup_url": "https://platform.openai.com/api-keys"},
+    {"id": "deepseek", "name": "\U0001F30A DeepSeek", "needs_key": "deepseek_api_key",
+     "setup_url": "https://platform.deepseek.com/api_keys"},
+    {"id": "gemini", "name": "\u2728 Google Gemini", "needs_key": "gemini_api_key",
+     "setup_url": "https://aistudio.google.com/app/apikey"},
+    {"id": "deepl", "name": "\U0001F3AF DeepL (Free or Pro)", "needs_key": "deepl_api_key",
+     "setup_url": "https://www.deepl.com/pro-api"},
     {"id": "libretranslate", "name": "\U0001F513 LibreTranslate", "needs_key": ""},
     {"id": "google", "name": "\U0001F310 Google Translate (free)", "needs_key": ""},
 ]
@@ -1231,6 +1235,9 @@ class EditorBackend(QObject):
                 "id": spec["id"],
                 "name": spec["name"],
                 "available": available,
+                "needsKey": bool(key_name),
+                "settingKey": key_name,
+                "setupUrl": spec.get("setup_url", ""),
             })
         return out
 
@@ -1268,6 +1275,170 @@ class EditorBackend(QObject):
         self._single_worker = None
         self.singleTranslateRunningChanged.emit()
         self.singleTranslateFinished.emit(entry_id, ok, message)
+
+    #: DeepL's own web translator accepts a deep link of the form
+    #: #<source>/<target>/<text>. This is the public UI, not an internal API:
+    #: the browser opens, a person reads the result and copies it back. That is
+    #: an ordinary use of the free translator, and nothing here breaks when
+    #: DeepL changes their internals.
+    DEEPL_WEB_BASE = "https://www.deepl.com/translator"
+
+    def _clean_source_for(self, entry_id: int) -> tuple[str, Any]:
+        """Return (clean_text, segments) for an entry, or ("", None)."""
+        from src.core.text_segmenter import clean_text
+        from src.core.glossary import Glossary
+
+        row = self._store.get_entry(entry_id) if self._store else None
+        if not row:
+            return "", None
+        original = row.get("original_text", "")
+        if not original.strip():
+            return "", None
+
+        settings = self.settings_backend.get_dict()
+        glossary_path = settings.get("glossary_path", "")
+        glossary = (
+            Glossary(glossary_path)
+            if settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path)
+            else None
+        )
+        protected, term_map = glossary.protect_terms(original) if glossary else (original, {})
+        clean, segs = clean_text(protected)
+        return clean, (segs, term_map, glossary)
+
+    @pyqtSlot(int, result=str)
+    def deeplWebUrl(self, entry_id: int) -> str:
+        """Deep link that opens DeepL's web translator with this entry pre-filled."""
+        from urllib.parse import quote
+
+        clean, bundle = self._clean_source_for(entry_id)
+        if not clean or bundle is None:
+            return ""
+        settings = self.settings_backend.get_dict()
+        src = str(settings.get("source_lang", "auto") or "auto")
+        tgt = str(settings.get("target_lang", "en") or "en")
+        if src in ("", "auto"):
+            src = "auto"
+        # DeepL's fragment treats "/" as a separator, so it must stay encoded.
+        text = quote(clean, safe="")
+        return f"{self.DEEPL_WEB_BASE}#{src}/{tgt}/{text}"
+
+    @pyqtSlot(int, result="QVariantMap")
+    def pasteTranslationForEntry(self, entry_id: int) -> dict:
+        """Take the clipboard as this entry's translation, guarded like any engine.
+
+        Runs the same reassemble + glossary-restore chain the translators use,
+        so a hand-pasted translation cannot drop escape codes that a manual
+        copy-paste into the grid would have lost.
+        """
+        from src.core.text_segmenter import reassemble
+
+        if not self._store or entry_id <= 0:
+            return {"ok": False, "message": "No entry selected.", "nextId": -1}
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            pasted = (QGuiApplication.clipboard().text() or "").strip()
+        except Exception as exc:
+            return {"ok": False, "message": f"Clipboard unavailable: {exc}", "nextId": -1}
+        if not pasted:
+            return {"ok": False, "message": "Clipboard is empty.", "nextId": -1}
+
+        clean, bundle = self._clean_source_for(entry_id)
+        if bundle is None:
+            return {"ok": False, "message": "Entry not found.", "nextId": -1}
+        segs, term_map, glossary = bundle
+
+        if pasted == clean:
+            return {"ok": False, "message": "Clipboard still holds the source text.", "nextId": -1}
+
+        restored = reassemble(pasted, segs) if segs else pasted
+        if glossary:
+            restored = glossary.restore_terms(restored, term_map)
+
+        updated = self._store.update_entry(entry_id, restored)
+        if not updated:
+            return {"ok": False, "message": "Could not update the entry.", "nextId": -1}
+
+        self._table_model.update_row_by_id(entry_id, updated)
+        if entry_id == self._selected_entry_id:
+            self._set_selected_entry_dict(updated)
+        self._refresh_stats()
+        self.hasUnsavedChangesChanged.emit()
+
+        issues = []
+        try:
+            from src.core.translation_quality import translation_issues
+            issues = translation_issues(updated.get("original_text", ""), restored)
+        except Exception:
+            pass
+
+        message = "Pasted." if not issues else "Pasted - check: " + ", ".join(issues)
+        return {"ok": True, "message": message, "nextId": self.nextUntranslatedAfter(entry_id)}
+
+    @pyqtSlot(int, result=int)
+    def nextUntranslatedAfter(self, entry_id: int) -> int:
+        """Id of the next still-untranslated entry in the current scope, or -1."""
+        if not self._store:
+            return -1
+        rows = self._store.get_untranslated_batch(
+            last_id=max(0, entry_id),
+            limit=1,
+            file_filter="all" if self._selected_file in ALL_FILES_ALIASES else self._selected_file,
+            category_filter=self._selected_category,
+            search_query=self._search_query,
+        )
+        return int(rows[0]["id"]) if rows else -1
+
+    @pyqtSlot(str, result=str)
+    def apiKeySetupUrl(self, engine: str) -> str:
+        """Where a user obtains a key for this engine, for the browser hand-off."""
+        for spec in SINGLE_TRANSLATE_ENGINES:
+            if spec["id"] == engine:
+                return str(spec.get("setup_url", ""))
+        return ""
+
+    @pyqtSlot(str, result=str)
+    def clipboardApiKeyCandidate(self, engine: str) -> str:
+        """Return the clipboard contents if they plausibly look like a key.
+
+        Keys cannot be fetched programmatically - every provider puts account
+        creation behind a login, and DeepL additionally requires card details
+        for identity verification - so the best we can do is pre-fill what the
+        user just copied and let them confirm it.
+        """
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            text = (QGuiApplication.clipboard().text() or "").strip()
+        except Exception:
+            return ""
+        if not text or len(text) > 200 or "\n" in text or " " in text:
+            return ""
+        if len(text) < 16:
+            return ""
+        return text
+
+    @pyqtSlot(str, str, result="QVariantMap")
+    def saveApiKeyFor(self, engine: str, key: str) -> dict:
+        """Store a user-supplied key against the right provider setting."""
+        key = (key or "").strip()
+        spec = next((e for e in SINGLE_TRANSLATE_ENGINES if e["id"] == engine), None)
+        if spec is None or not spec.get("needs_key"):
+            return {"ok": False, "message": "This engine does not use an API key."}
+        if not key:
+            return {"ok": False, "message": "No key entered."}
+
+        if engine == "deepl" and ":fx" not in key and len(key.split("-")) < 4:
+            return {
+                "ok": False,
+                "message": "That does not look like a DeepL key. Free keys end in ':fx'.",
+            }
+
+        try:
+            self.settings_backend._set(spec["needs_key"], key)
+            self.settings_backend.save()
+        except Exception as exc:
+            return {"ok": False, "message": f"Could not save the key: {exc}"}
+        return {"ok": True, "message": "Key saved."}
 
     @pyqtSlot()
     def revertSelectedEntry(self) -> None:

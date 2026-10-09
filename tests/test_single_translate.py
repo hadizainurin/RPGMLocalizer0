@@ -55,6 +55,13 @@ class DeepLFreeTests(unittest.TestCase):
         tr = DeepLTranslator(api_key="abc123")
         self.assertEqual(tr._resolve_base_url(), DeepLTranslator.base_url_paid)
 
+    def test_no_key_defaults_to_free_endpoint(self) -> None:
+        """Free is the common case, so an unset key must not aim at the Pro host."""
+        self.assertEqual(DeepLTranslator(api_key="")._resolve_base_url(),
+                         DeepLTranslator.base_url_free)
+        self.assertEqual(DeepLTranslator(api_key="   ")._resolve_base_url(),
+                         DeepLTranslator.base_url_free)
+
 
 class WorkerTests(unittest.TestCase):
     def test_engine_override_does_not_mutate_caller_settings(self) -> None:
@@ -72,3 +79,38 @@ class WorkerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeySetupTests(unittest.TestCase):
+    """Each user supplies their own key; none is ever bundled."""
+
+    def test_keyed_engines_have_a_setup_url(self) -> None:
+        for spec in SINGLE_TRANSLATE_ENGINES:
+            if spec.get("needs_key"):
+                with self.subTest(engine=spec["id"]):
+                    self.assertTrue(spec.get("setup_url", "").startswith("https://"))
+
+    def test_keyless_engines_have_no_setup_url(self) -> None:
+        for spec in SINGLE_TRANSLATE_ENGINES:
+            if not spec.get("needs_key"):
+                with self.subTest(engine=spec["id"]):
+                    self.assertEqual(spec.get("setup_url", ""), "")
+
+    def test_no_api_key_is_shipped_in_the_source(self) -> None:
+        """Guard against a credential ever being committed to this public repo."""
+        import pathlib, re
+        suspicious = re.compile(
+            r"(sk-[A-Za-z0-9]{20,}"
+            r"|AIza[A-Za-z0-9_\-]{30,}"
+            r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:fx)"
+        )
+        offenders = []
+        for path in pathlib.Path("src").rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if suspicious.search(text):
+                offenders.append(str(path))
+        self.assertEqual(offenders, [], f"possible API key committed in: {offenders}")
+
+    def test_deepl_key_shape_is_validated(self) -> None:
+        from src.backend.editor_backend import SINGLE_TRANSLATE_ENGINES as E
+        self.assertIn("deepl", {s["id"] for s in E})

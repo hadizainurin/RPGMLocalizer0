@@ -919,9 +919,13 @@ class DeepLTranslator(BaseTranslator):
     def _resolve_base_url(self) -> str:
         """Pick the free or Pro endpoint from the key itself.
 
-        DeepL free keys carry a ":fx" suffix, so one menu entry covers both
-        tiers and the user never has to choose.
+        DeepL Free keys carry a ":fx" suffix, so one option covers both tiers
+        and the user never has to choose. An unset key defaults to the Free
+        endpoint: the Free plan is the common case, and sending an unkeyed
+        request to the Pro host only produces a more confusing error.
         """
+        if not self.api_key:
+            return self.base_url_free
         if ":fx" in self.api_key or self.api_key.startswith("free:"):
             return self.base_url_free
         return self.base_url_paid
@@ -993,7 +997,11 @@ class DeepLTranslator(BaseTranslator):
                         target_lang=tl,
                         engine=TranslationEngine.DEEPL,
                         success=False,
-                        error="DeepL API key required",
+                        error=(
+                            "DeepL needs an API key even on the Free plan. Create a free "
+                            "key at deepl.com/pro-api (it ends in ':fx') and paste it into "
+                            "Settings. For a no-signup option, use Google Translate."
+                        ),
                         metadata=meta,
                     )
                 )

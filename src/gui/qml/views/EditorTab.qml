@@ -50,19 +50,65 @@ Item {
         }
         MenuSeparator {}
 
+        MenuItem {
+            text: localeManager.strings.editor.deepl_open_web
+            enabled: root.contextEntryId > 0
+            onTriggered: {
+                root.selectRow(root.contextEntryId)
+                var url = editorBackend.deeplWebUrl(root.contextEntryId)
+                if (url !== "") {
+                    appBackend.openUrl(url)
+                    root.showNotice(localeManager.strings.editor.deepl_open_web_hint)
+                } else {
+                    root.showNotice(localeManager.strings.editor.deepl_nothing_to_send)
+                }
+            }
+        }
+        MenuItem {
+            text: localeManager.strings.editor.deepl_paste_next + "   (Ctrl+Shift+V)"
+            enabled: root.contextEntryId > 0
+            onTriggered: root.pasteAndAdvance(root.contextEntryId)
+        }
+
+        MenuSeparator {}
+
         Repeater {
             model: editorBackend.singleTranslateEngines
             MenuItem {
                 text: modelData.available
                       ? modelData.name
-                      : modelData.name + "  " + localeManager.strings.editor.translate_with_no_key
-                enabled: modelData.available && !editorBackend.singleTranslateRunning
+                      : modelData.name + "  " + localeManager.strings.editor.translate_with_setup
+                enabled: !editorBackend.singleTranslateRunning
                 onTriggered: {
-                    if (root.contextEntryId > 0) {
+                    if (root.contextEntryId <= 0)
+                        return
+                    if (modelData.available) {
                         root.selectRow(root.contextEntryId)
                         editorBackend.translateEntryWith(root.contextEntryId, modelData.id)
+                        return
                     }
+                    // No key yet: send them to the provider, then take the paste.
+                    keyDialog.engineId = modelData.id
+                    keyDialog.engineName = modelData.name
+                    keyDialog.setupUrl = modelData.setupUrl
+                    keyDialog.keyText = editorBackend.clipboardApiKeyCandidate(modelData.id)
+                    keyDialog.errorText = ""
+                    if (modelData.setupUrl !== "")
+                        appBackend.openUrl(modelData.setupUrl)
+                    keyDialog.open()
                 }
+            }
+        }
+
+        MenuSeparator {}
+        MenuItem {
+            enabled: false
+            height: 26
+            contentItem: Text {
+                text: localeManager.strings.editor.translate_with_keyless_hint
+                font.pixelSize: 10
+                color: t ? t.textMuted : "#55556a"
+                verticalAlignment: Text.AlignVCenter
             }
         }
     }
@@ -70,10 +116,9 @@ Item {
     Connections {
         target: editorBackend
         function onSingleTranslateFinished(entryId, ok, message) {
-            root.singleTranslateNotice = ok
+            root.showNotice(ok
                 ? localeManager.strings.editor.translate_with_done + " " + message
-                : localeManager.strings.editor.translate_with_failed + " " + message
-            singleTranslateNoticeTimer.restart()
+                : localeManager.strings.editor.translate_with_failed + " " + message)
         }
     }
     property string singleTranslateNotice: ""
@@ -103,6 +148,142 @@ Item {
             text: root.singleTranslateNotice
             font.pixelSize: 12
             color: t ? t.textPrimary : "#f0f0ff"
+        }
+    }
+
+    Popup {
+        id: keyDialog
+        property string engineId: ""
+        property string engineName: ""
+        property string setupUrl: ""
+        property string keyText: ""
+        property string errorText: ""
+
+        width: 460
+        implicitHeight: keyCol.implicitHeight + 48
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: Overlay.overlay
+
+        background: Rectangle {
+            radius: 14
+            color: t ? t.bg2 : "#1a1a24"
+            border.color: t ? t.border2 : "#3d3d55"
+            border.width: 1
+        }
+
+        ColumnLayout {
+            id: keyCol
+            anchors.fill: parent
+            anchors.margins: 24
+            spacing: 14
+
+            Text {
+                text: localeManager.strings.editor.key_dialog_title + " " + keyDialog.engineName
+                font.pixelSize: 14; font.bold: true
+                color: t ? t.textPrimary : "#f0f0ff"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            Text {
+                text: localeManager.strings.editor.key_dialog_body
+                font.pixelSize: 11
+                color: t ? t.textSecondary : "#9090b8"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 34
+                radius: 8
+                color: t ? t.bg4 : "#2a2a3a"
+                border.color: t ? t.border2 : "#3d3d55"
+                border.width: 1
+                TextField {
+                    id: keyField
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    text: keyDialog.keyText
+                    placeholderText: localeManager.strings.editor.key_dialog_placeholder
+                    color: t ? t.textPrimary : "#f0f0ff"
+                    placeholderTextColor: t ? t.textMuted : "#55556a"
+                    font.pixelSize: 12
+                    background: Item {}
+                    onTextChanged: keyDialog.keyText = text
+                }
+            }
+
+            Text {
+                visible: keyDialog.errorText !== ""
+                text: keyDialog.errorText
+                font.pixelSize: 11
+                color: t ? t.danger : "#f87171"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Button {
+                    text: localeManager.strings.editor.key_dialog_paste
+                    onClicked: {
+                        var c = editorBackend.clipboardApiKeyCandidate(keyDialog.engineId)
+                        if (c !== "") { keyField.text = c; keyDialog.errorText = "" }
+                        else keyDialog.errorText = localeManager.strings.editor.key_dialog_clipboard_empty
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: localeManager.strings.common.cancel
+                    onClicked: keyDialog.close()
+                }
+                Button {
+                    text: localeManager.strings.common.confirm
+                    enabled: keyDialog.keyText.length > 0
+                    onClicked: {
+                        var res = editorBackend.saveApiKeyFor(keyDialog.engineId, keyDialog.keyText)
+                        if (res.ok) {
+                            keyDialog.close()
+                            root.singleTranslateNotice = res.message
+                            singleTranslateNoticeTimer.restart()
+                        } else {
+                            keyDialog.errorText = res.message
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function showNotice(text) {
+        root.singleTranslateNotice = text
+        singleTranslateNoticeTimer.restart()
+    }
+
+    //: Takes the clipboard as the translation for `entryId`, then jumps to the
+    //: next untranslated row so a browser round-trip is two keystrokes, not six.
+    function pasteAndAdvance(entryId) {
+        if (entryId <= 0)
+            return
+        var res = editorBackend.pasteTranslationForEntry(entryId)
+        root.showNotice(res.message)
+        if (res.ok && res.nextId > 0) {
+            root.selectRow(res.nextId)
+            root.contextEntryId = res.nextId
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+V"
+        context: Qt.WindowShortcut
+        onActivated: {
+            var id = editorBackend.selectedEntry && editorBackend.selectedEntry.id
+                     ? editorBackend.selectedEntry.id : root.contextEntryId
+            root.pasteAndAdvance(id)
         }
     }
 

@@ -317,8 +317,19 @@
     "status_no_translatable_files": "No translatable files found in the project data directory.",
     "status_wolf_archives_isolated": "Conflicting .wolf archives were automatically moved to 'Data/_wolf_original/' so the WOLF engine can load the translated files.",
     "translate_with_title": "Translate this entry with...",
-    "translate_with_no_key": "(no API key set)",
+    "translate_with_no_key": "(API key required)",
     "translate_with_done": "Translated with",
-    "translate_with_failed": "Translation failed -"
+    "translate_with_failed": "Translation failed -",
+    "translate_with_keyless_hint": "Google Translate and a local LLM need no account.",
+    "translate_with_setup": "- set up key",
+    "key_dialog_title": "API key for",
+    "key_dialog_body": "Your browser has opened the provider's key page. Sign in, copy your key, then paste it below. The key is stored only on this computer and is yours alone - nothing is shared.",
+    "key_dialog_placeholder": "Paste your API key here",
+    "key_dialog_paste": "Paste from clipboard",
+    "key_dialog_clipboard_empty": "Nothing key-like on the clipboard. Copy the key first.",
+    "deepl_open_web": "🌐 Open this line in DeepL (browser)",
+    "deepl_open_web_hint": "Opened in DeepL. Copy the result, then press Ctrl+Shift+V here.",
+    "deepl_paste_next": "📋 Paste translation & next",
+    "deepl_nothing_to_send": "Nothing translatable in this entry."
   }
 }
