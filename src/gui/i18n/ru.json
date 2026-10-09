@@ -314,6 +314,13 @@
     "key_dialog_paste": "Paste from clipboard",
     "key_dialog_clipboard_empty": "Nothing key-like on the clipboard. Copy the key first.",
     "paste_translation_next": "📋 Paste translation & next",
-    "status_chip_translated": "✓ Translated"
+    "status_chip_translated": "✓ Translated",
+    "retranslate_one": "↻ Re-translate this line",
+    "retranslate_many": "↻ Re-translate {count} selected lines",
+    "restore_one": "↩ Restore original text",
+    "restore_many": "↩ Restore {count} lines to original",
+    "restore_done": "{count} lines restored to the original text.",
+    "select_all_page": "Select all on this page",
+    "clear_selection": "Clear selection"
   }
 }

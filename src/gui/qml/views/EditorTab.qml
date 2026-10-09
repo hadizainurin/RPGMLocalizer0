@@ -52,8 +52,40 @@ Item {
 
         MenuItem {
             text: localeManager.strings.editor.paste_translation_next + "   (Ctrl+Shift+V)"
-            enabled: root.contextEntryId > 0
+            enabled: root.contextEntryId > 0 && root.selectedIds.length <= 1
             onTriggered: root.pasteAndAdvance(root.contextEntryId)
+        }
+        MenuItem {
+            text: root.selectedIds.length > 1
+                  ? I18n.format(localeManager.strings.editor.retranslate_many, {count: root.selectedIds.length})
+                  : localeManager.strings.editor.retranslate_one
+            enabled: !editorBackend.singleTranslateRunning
+                     && root.actionTargets(root.contextEntryId).length > 0
+            onTriggered: {
+                var ids = root.actionTargets(root.contextEntryId)
+                editorBackend.translateEntriesWith(ids, "")
+            }
+        }
+        MenuItem {
+            text: root.selectedIds.length > 1
+                  ? I18n.format(localeManager.strings.editor.restore_many, {count: root.selectedIds.length})
+                  : localeManager.strings.editor.restore_one
+            enabled: root.actionTargets(root.contextEntryId).length > 0
+            onTriggered: {
+                var ids = root.actionTargets(root.contextEntryId)
+                var n = editorBackend.revertEntries(ids)
+                root.clearSelection()
+                root.showNotice(I18n.format(localeManager.strings.editor.restore_done, {count: n}))
+            }
+        }
+        MenuItem {
+            text: localeManager.strings.editor.select_all_page
+            onTriggered: root.selectedIds = editorBackend.currentPageEntryIds()
+        }
+        MenuItem {
+            text: localeManager.strings.editor.clear_selection
+            enabled: root.selectedIds.length > 0
+            onTriggered: root.clearSelection()
         }
 
         MenuSeparator {}
@@ -86,8 +118,10 @@ Item {
                     if (root.contextEntryId <= 0)
                         return
                     if (modelData.available) {
-                        root.selectRow(root.contextEntryId)
-                        editorBackend.translateEntryWith(root.contextEntryId, modelData.id)
+                        var ids = root.actionTargets(root.contextEntryId)
+                        if (ids.length === 1)
+                            root.selectRow(ids[0])
+                        editorBackend.translateEntriesWith(ids, modelData.id)
                         return
                     }
                     // No key yet: send them to the provider, then take the paste.
@@ -249,6 +283,48 @@ Item {
                 }
             }
         }
+    }
+
+    //: Ids of rows picked out by click-drag, Ctrl+click or Shift+click. Empty
+    //: means "no multi-selection" and actions fall back to the right-clicked row.
+    property var selectedIds: []
+    property int dragAnchorId: -1
+    property bool dragSelecting: false
+
+    function isRowSelected(entryId) {
+        return root.selectedIds.indexOf(entryId) !== -1
+    }
+
+    function clearSelection() {
+        root.selectedIds = []
+        root.dragAnchorId = -1
+    }
+
+    function toggleSelection(entryId) {
+        var ids = root.selectedIds.slice()
+        var at = ids.indexOf(entryId)
+        if (at === -1) ids.push(entryId)
+        else ids.splice(at, 1)
+        root.selectedIds = ids
+    }
+
+    //: Range select across the visible page, by row order rather than id, so a
+    //: filtered view selects what the user actually sees between the two clicks.
+    function selectRange(fromId, toId) {
+        var page = editorBackend.currentPageEntryIds()
+        var a = page.indexOf(fromId)
+        var b = page.indexOf(toId)
+        if (a === -1 || b === -1) { root.selectedIds = [toId]; return }
+        if (a > b) { var t = a; a = b; b = t }
+        root.selectedIds = page.slice(a, b + 1)
+    }
+
+    //: Rows the next action applies to: the multi-selection if there is one,
+    //: otherwise just the row under the cursor.
+    function actionTargets(fallbackId) {
+        if (root.selectedIds.length > 0)
+            return root.selectedIds
+        return fallbackId > 0 ? [fallbackId] : []
     }
 
     function showNotice(text) {
@@ -965,11 +1041,25 @@ Item {
                         id: rowDelegate
                         width: stringListView.width
                         height: 38
+                        //: Exposed so the drag handler can ask itemAt() which row it is over.
+                        property int rowEntryId: model.entryId
                         property bool isSelected: editorBackend.selectedEntry.id === model.entryId
+                        property bool inMultiSelection: root.isRowSelected(model.entryId)
 
-                        color: isSelected 
-                            ? (t ? t.accentGlow : "#38326b") 
-                            : (rowMouse.containsMouse ? (t ? t.bgHover : "#28283a") : "transparent")
+                        color: inMultiSelection
+                            ? (t ? t.accentGlow : "#38326b")
+                            : (isSelected
+                                ? (t ? t.accentGlow : "#38326b")
+                                : (rowMouse.containsMouse ? (t ? t.bgHover : "#28283a") : "transparent"))
+
+                        // A left edge marker distinguishes a multi-row pick from the
+                        // single row currently open in the editor panes.
+                        Rectangle {
+                            visible: rowDelegate.inMultiSelection
+                            width: 3
+                            height: parent.height
+                            color: t ? t.accent : "#7c6cf8"
+                        }
 
                         Rectangle {
                             width: parent.width; height: 1
@@ -1044,11 +1134,50 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            onClicked: (mouse) => {
+
+                            onPressed: (mouse) => {
                                 if (mouse.button === Qt.RightButton) {
                                     root.contextEntryId = model.entryId
+                                    // Right-clicking outside the selection acts on
+                                    // that row alone, which is what people expect.
+                                    if (!root.isRowSelected(model.entryId))
+                                        root.clearSelection()
                                     translateWithMenu.popup()
-                                } else {
+                                    return
+                                }
+                                if (mouse.modifiers & Qt.ControlModifier) {
+                                    root.toggleSelection(model.entryId)
+                                    root.dragAnchorId = model.entryId
+                                    return
+                                }
+                                if ((mouse.modifiers & Qt.ShiftModifier) && root.dragAnchorId > 0) {
+                                    root.selectRange(root.dragAnchorId, model.entryId)
+                                    return
+                                }
+                                // Plain press starts a drag-select from this row.
+                                root.dragSelecting = true
+                                root.dragAnchorId = model.entryId
+                                root.selectedIds = [model.entryId]
+                            }
+
+                            onPositionChanged: (mouse) => {
+                                if (!root.dragSelecting)
+                                    return
+                                var pt = mapToItem(stringListView.contentItem, mouse.x, mouse.y)
+                                var item = stringListView.itemAt(pt.x, pt.y)
+                                if (item && item.rowEntryId > 0 && root.dragAnchorId > 0)
+                                    root.selectRange(root.dragAnchorId, item.rowEntryId)
+                            }
+
+                            onReleased: (mouse) => {
+                                if (mouse.button !== Qt.LeftButton)
+                                    return
+                                var wasDragging = root.dragSelecting
+                                root.dragSelecting = false
+                                // A press-and-release on one row is a plain click:
+                                // open it in the editor and drop the selection.
+                                if (wasDragging && root.selectedIds.length <= 1) {
+                                    root.clearSelection()
                                     root.selectRow(model.entryId)
                                 }
                             }

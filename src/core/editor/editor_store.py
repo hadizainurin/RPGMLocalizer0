@@ -706,6 +706,57 @@ class EditorStore:
                     cat_map[cat].append(fn)
             return cat_map
 
+    def revert_entries(self, entry_ids: list[int]) -> int:
+        """Restore several entries to their original text in one transaction.
+
+        Used by the editor's multi-row "Restore original" action. Mirrors
+        revert_entry exactly, including clearing translation_source so the rows
+        fall back into Untranslated.
+        """
+        if not entry_ids:
+            return 0
+
+        with self._lock:
+            cur = self.conn.cursor()
+            placeholders = ",".join("?" * len(entry_ids))
+            cur.execute(
+                f"SELECT id, original_text, tag FROM entries WHERE id IN ({placeholders})",
+                list(entry_ids),
+            )
+            updates = []
+            for row in cur.fetchall():
+                lines, _overflow = check_line_overflow(row["original_text"], row["tag"])
+                updates.append((row["original_text"], lines, row["id"]))
+
+            if updates:
+                cur.executemany(
+                    """
+                    UPDATE entries
+                    SET translated_text = ?,
+                        is_modified = 0,
+                        line_count = ?,
+                        has_warning = 0,
+                        warning_msg = '',
+                        manual_wrap = 0,
+                        translation_source = ''
+                    WHERE id = ?
+                    """,
+                    updates,
+                )
+                self.conn.commit()
+            return len(updates)
+
+    def get_entries(self, entry_ids: list[int]) -> list[dict]:
+        """Fetch several entries by id, preserving the caller's order."""
+        if not entry_ids:
+            return []
+        with self._lock:
+            cur = self.conn.cursor()
+            placeholders = ",".join("?" * len(entry_ids))
+            cur.execute(f"SELECT * FROM entries WHERE id IN ({placeholders})", list(entry_ids))
+            by_id = {row["id"]: dict(row) for row in cur.fetchall()}
+        return [by_id[i] for i in entry_ids if i in by_id]
+
     def get_stats(self) -> dict[str, int]:
         """Counts for the status chips: total, unsaved, translated, modified, warnings, untranslated."""
         with self._lock:

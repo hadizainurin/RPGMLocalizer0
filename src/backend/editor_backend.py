@@ -674,20 +674,24 @@ SINGLE_TRANSLATE_ENGINES: list[dict[str, str]] = [
 
 
 class SingleTranslateWorker(QThread):
-    """Translate one entry with a chosen engine, off the UI thread.
+    """Translate one or more chosen entries with a chosen engine, off the UI thread.
 
     Mirrors AutoTranslateWorker's protect -> clean -> translate -> reassemble
-    chain so a one-off translation is guarded exactly like a bulk one; the only
-    difference is that the engine can be overridden per call.
+    chain so a hand-picked translation is guarded exactly like a bulk one. Two
+    differences: the engine can be overridden per call, and entries are
+    translated regardless of whether they already hold a translation - this is
+    the path for deliberately re-running a line.
     """
 
     finished = pyqtSignal(int, bool, str)  # (entry_id, success, message)
+    rowDone = pyqtSignal(int, bool)        # (entry_id, success) - per row of a set
+    progress = pyqtSignal(int, int)        # (done, total)
 
     def __init__(
         self,
         store: "EditorStore",
         settings: dict,
-        entry_id: int,
+        entry_id: int | list[int],
         engine: str = "",
         parent: QObject | None = None,
     ) -> None:
@@ -696,10 +700,16 @@ class SingleTranslateWorker(QThread):
         self.settings = dict(settings)
         if engine:
             self.settings["engine"] = engine
-        self.entry_id = entry_id
+        self.entry_ids = [entry_id] if isinstance(entry_id, int) else list(entry_id)
+        self.entry_id = self.entry_ids[0] if self.entry_ids else -1
         self.engine = engine or str(settings.get("engine", "google"))
         self.result_text: str = ""
+        self.results: dict[int, str] = {}
+        self._cancel = False
         self.logger = logging.getLogger(self.__class__.__name__)
+
+    def cancel(self) -> None:
+        self._cancel = True
 
     def run(self) -> None:
         import asyncio
@@ -708,14 +718,8 @@ class SingleTranslateWorker(QThread):
         from src.core.text_segmenter import clean_text, reassemble
         from src.core.glossary import Glossary
 
-        row = self.store.get_entry(self.entry_id)
-        if not row:
-            self.finished.emit(self.entry_id, False, "Entry not found.")
-            return
-
-        original = row.get("original_text", "")
-        if not original.strip():
-            self.finished.emit(self.entry_id, False, "Nothing to translate.")
+        if not self.entry_ids:
+            self.finished.emit(-1, False, "Nothing selected.")
             return
 
         source_lang = self.settings.get("source_lang", "auto")
@@ -731,34 +735,72 @@ class SingleTranslateWorker(QThread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         translator = None
+        done = 0
+        failures: list[str] = []
         try:
             translator = create_translator(self.settings)
-            protected, term_map = glossary.protect_terms(original) if glossary else (original, {})
-            clean, segs = clean_text(protected)
-            if not clean.strip():
-                self.finished.emit(self.entry_id, False, "Nothing translatable in this entry.")
-                return
 
-            results = loop.run_until_complete(
-                translator.translate_batch([
-                    TranslationRequest(
-                        text=clean, source_lang=source_lang, target_lang=target_lang
+            for entry_id in self.entry_ids:
+                if self._cancel:
+                    break
+                row = self.store.get_entry(entry_id)
+                original = (row or {}).get("original_text", "")
+                if not row or not original.strip():
+                    self.rowDone.emit(entry_id, False)
+                    done += 1
+                    self.progress.emit(done, len(self.entry_ids))
+                    continue
+
+                protected, term_map = glossary.protect_terms(original) if glossary else (original, {})
+                clean, segs = clean_text(protected)
+                if not clean.strip():
+                    self.rowDone.emit(entry_id, False)
+                    done += 1
+                    self.progress.emit(done, len(self.entry_ids))
+                    continue
+
+                try:
+                    results = loop.run_until_complete(
+                        translator.translate_batch([
+                            TranslationRequest(
+                                text=clean, source_lang=source_lang, target_lang=target_lang
+                            )
+                        ])
                     )
-                ])
-            )
-            if not results or not results[0].success or not results[0].translated_text:
-                err = (results[0].error if results else None) or "no text returned"
-                self.finished.emit(self.entry_id, False, f"{self.engine}: {err}")
-                return
+                except Exception as exc:
+                    self.logger.warning("Translate failed for %s: %s", entry_id, exc)
+                    failures.append(str(exc))
+                    self.rowDone.emit(entry_id, False)
+                    done += 1
+                    self.progress.emit(done, len(self.entry_ids))
+                    continue
 
-            translated = results[0].translated_text
-            restored = reassemble(translated, segs) if segs else translated
-            if glossary:
-                restored = glossary.restore_terms(restored, term_map)
-            self.result_text = restored
-            self.finished.emit(self.entry_id, True, self.engine)
+                if not results or not results[0].success or not results[0].translated_text:
+                    failures.append((results[0].error if results else None) or "no text returned")
+                    self.rowDone.emit(entry_id, False)
+                else:
+                    translated = results[0].translated_text
+                    restored = reassemble(translated, segs) if segs else translated
+                    if glossary:
+                        restored = glossary.restore_terms(restored, term_map)
+                    self.results[entry_id] = restored
+                    self.result_text = restored
+                    self.rowDone.emit(entry_id, True)
+
+                done += 1
+                self.progress.emit(done, len(self.entry_ids))
+
+            ok_count = len(self.results)
+            if ok_count == 0:
+                reason = failures[0] if failures else "no text returned"
+                self.finished.emit(self.entry_id, False, f"{self.engine}: {reason}")
+            elif len(self.entry_ids) == 1:
+                self.finished.emit(self.entry_id, True, self.engine)
+            else:
+                suffix = "" if ok_count == len(self.entry_ids) else f" ({len(self.entry_ids) - ok_count} failed)"
+                self.finished.emit(self.entry_id, True, f"{self.engine}: {ok_count} rows{suffix}")
         except Exception as exc:
-            self.logger.warning("Single translate failed (%s): %s", self.engine, exc)
+            self.logger.warning("Translate run failed (%s): %s", self.engine, exc)
             self.finished.emit(self.entry_id, False, f"{self.engine}: {exc}")
         finally:
             try:
@@ -1325,30 +1367,71 @@ class EditorBackend(QObject):
     @pyqtSlot(int, str)
     def translateEntryWith(self, entry_id: int, engine: str = "") -> None:
         """Translate one entry using a specific engine, leaving settings untouched."""
-        if not self._store or entry_id <= 0:
+        self.translateEntriesWith([entry_id], engine)
+
+    @pyqtSlot("QVariantList", str)
+    def translateEntriesWith(self, entry_ids: list, engine: str = "") -> None:
+        """Translate the given entries, re-running any that already have text.
+
+        This is the deliberate re-translate path: unlike the bulk auto-translate
+        job, it does not skip rows that already hold a translation.
+        """
+        ids = [int(i) for i in (entry_ids or []) if int(i) > 0]
+        if not self._store or not ids:
             return
         if self._single_worker is not None and self._single_worker.isRunning():
             self.singleTranslateFinished.emit(
-                entry_id, False, "Another single translation is still running."
+                ids[0], False, "A translation is already running."
             )
             return
 
         settings = self.settings_backend.get_dict()
-        self._single_worker = SingleTranslateWorker(self._store, settings, entry_id, engine, self)
+        self._single_worker = SingleTranslateWorker(self._store, settings, ids, engine, self)
+        self._single_worker.rowDone.connect(self._on_single_row_done)
         self._single_worker.finished.connect(self._on_single_translate_finished)
         self._single_worker.start()
         self.singleTranslateRunningChanged.emit()
 
-    def _on_single_translate_finished(self, entry_id: int, ok: bool, message: str) -> None:
+    def _on_single_row_done(self, entry_id: int, ok: bool) -> None:
+        """Write each row as it lands, so a long selection shows progress."""
         worker = self._single_worker
-        if ok and worker is not None and worker.result_text:
-            updated = self._store.update_entry(entry_id, worker.result_text)
-            if updated:
-                self._table_model.update_row_by_id(entry_id, updated)
-                if entry_id == self._selected_entry_id:
-                    self._set_selected_entry_dict(updated)
-                self._refresh_stats()
-                self.hasUnsavedChangesChanged.emit()
+        if not ok or worker is None:
+            return
+        text = worker.results.get(entry_id)
+        if not text:
+            return
+        updated = self._store.update_entry(entry_id, text)
+        if updated:
+            self._table_model.update_row_by_id(entry_id, updated)
+            if entry_id == self._selected_entry_id:
+                self._set_selected_entry_dict(updated)
+
+    @pyqtSlot("QVariantList", result=int)
+    def revertEntries(self, entry_ids: list) -> int:
+        """Restore the given entries to their original text."""
+        ids = [int(i) for i in (entry_ids or []) if int(i) > 0]
+        if not self._store or not ids:
+            return 0
+        count = self._store.revert_entries(ids)
+        if count:
+            self._refresh_page()
+            self._refresh_stats()
+            if self._selected_entry_id in ids:
+                row = self._store.get_entry(self._selected_entry_id)
+                if row:
+                    self._set_selected_entry_dict(row)
+            self.hasUnsavedChangesChanged.emit()
+        return count
+
+    @pyqtSlot(result="QVariantList")
+    def currentPageEntryIds(self) -> list:
+        """Ids shown on the current page, for a 'select all' action."""
+        return [int(r.get("id", 0)) for r in self._table_model._rows if r.get("id")]
+
+    def _on_single_translate_finished(self, entry_id: int, ok: bool, message: str) -> None:
+        if ok:
+            self._refresh_stats()
+            self.hasUnsavedChangesChanged.emit()
         self._single_worker = None
         self.singleTranslateRunningChanged.emit()
         self.singleTranslateFinished.emit(entry_id, ok, message)
