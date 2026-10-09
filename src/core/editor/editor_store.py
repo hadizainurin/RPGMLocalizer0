@@ -159,7 +159,6 @@ class EditorStore:
             CREATE INDEX IF NOT EXISTS idx_entries_cat ON entries(category);
             CREATE INDEX IF NOT EXISTS idx_entries_modified ON entries(is_modified);
             CREATE INDEX IF NOT EXISTS idx_entries_warning ON entries(has_warning);
-            CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                 file_name,
@@ -180,7 +179,8 @@ class EditorStore:
               VALUES ('delete', old.id, old.file_name, old.original_text, old.translated_text);
             END;
 
-            CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+            CREATE TRIGGER IF NOT EXISTS entries_au
+            AFTER UPDATE OF file_name, original_text, translated_text ON entries BEGIN
               INSERT INTO entries_fts(entries_fts, rowid, file_name, original_text, translated_text)
               VALUES ('delete', old.id, old.file_name, old.original_text, old.translated_text);
               INSERT INTO entries_fts(rowid, file_name, original_text, translated_text)
@@ -194,6 +194,17 @@ class EditorStore:
                     cur.execute("ALTER TABLE file_mtimes ADD COLUMN file_size INTEGER DEFAULT 0")
                 if "sample_crc" not in existing_cols:
                     cur.execute("ALTER TABLE file_mtimes ADD COLUMN sample_crc INTEGER DEFAULT 0")
+
+            cur.executescript("""
+                DROP TRIGGER IF EXISTS entries_au;
+                CREATE TRIGGER entries_au
+                AFTER UPDATE OF file_name, original_text, translated_text ON entries BEGIN
+                  INSERT INTO entries_fts(entries_fts, rowid, file_name, original_text, translated_text)
+                  VALUES ('delete', old.id, old.file_name, old.original_text, old.translated_text);
+                  INSERT INTO entries_fts(rowid, file_name, original_text, translated_text)
+                  VALUES (new.id, new.file_name, new.original_text, new.translated_text);
+                END;
+            """)
 
             # translation_source separates machine output from hand edits. Older
             # caches predate it, so add it and backfill from what we can infer:
@@ -211,9 +222,9 @@ class EditorStore:
                         ELSE 'auto'
                     END
                 """)
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source)"
-                )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source)"
+            )
             self.conn.commit()
 
     def is_cache_valid(self, project_files: list[str]) -> bool:

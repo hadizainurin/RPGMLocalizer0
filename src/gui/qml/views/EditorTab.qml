@@ -58,9 +58,26 @@ Item {
 
         MenuSeparator {}
 
-        Repeater {
+        MenuItem {
+            enabled: false
+            height: 26
+            contentItem: Text {
+                text: localeManager.strings.editor.translate_with_keyless_hint
+                font.pixelSize: 10
+                color: t ? t.textMuted : "#55556a"
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
+        //: A Repeater parents its items to the Menu's content item, which makes
+        //: Qt complain that it cannot stack them ("must be a sibling") and can
+        //: leave them out of order. Instantiator + insertItem is the supported
+        //: way to build menu entries from a model.
+        Instantiator {
             model: editorBackend.singleTranslateEngines
-            MenuItem {
+            onObjectAdded: (index, object) => translateWithMenu.addItem(object)
+            onObjectRemoved: (index, object) => translateWithMenu.removeItem(object)
+            delegate: MenuItem {
                 text: modelData.available
                       ? modelData.name
                       : modelData.name + "  " + localeManager.strings.editor.translate_with_setup
@@ -86,17 +103,6 @@ Item {
             }
         }
 
-        MenuSeparator {}
-        MenuItem {
-            enabled: false
-            height: 26
-            contentItem: Text {
-                text: localeManager.strings.editor.translate_with_keyless_hint
-                font.pixelSize: 10
-                color: t ? t.textMuted : "#55556a"
-                verticalAlignment: Text.AlignVCenter
-            }
-        }
     }
 
     Connections {
