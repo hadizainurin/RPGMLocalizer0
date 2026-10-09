@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from src.core.constants import AI_LOCAL_TIMEOUT
 from .base import BaseTranslator, TranslationEngine
 from .google import GoogleTranslator
 from .services import (
@@ -162,7 +163,9 @@ def _build_local_llm_translator(
         api_key=api_key,
         concurrency=concurrency,
         batch_size=batch_size,
-        timeout_seconds=timeout,
+        # Local generation is slow and has no per-request billing, so give it a
+        # generous floor regardless of the shared request timeout.
+        timeout_seconds=max(AI_LOCAL_TIMEOUT, timeout),
         system_prompt=str(settings.get("local_llm_prompt", "") or ""),
         prompt_mode=str(settings.get("local_llm_prompt_mode", "append") or "append"),
         debug_dump=bool(settings.get("local_llm_debug_dump", False)),
@@ -188,7 +191,13 @@ def create_translator(settings: Dict[str, Any]) -> BaseTranslator:
     engine_name = str(settings.get("engine", "google")).lower().strip()
     concurrency = int(settings.get("concurrent_requests", 12))
     batch_size = int(settings.get("batch_size", 15))
-    timeout = int(settings.get("timeout_seconds", 30))
+    # The settings store calls this "request_timeout"; reading "timeout_seconds"
+    # silently fell through to 30s. A local model generating a page of dialogue
+    # at ~20 tok/s needs far longer, so every page was abandoned mid-generation,
+    # retried, and abandoned again - which is what collapsed throughput.
+    timeout = int(settings.get("timeout_seconds")
+                  or settings.get("request_timeout")
+                  or 45)
 
     match engine_name:
         case "deepl":

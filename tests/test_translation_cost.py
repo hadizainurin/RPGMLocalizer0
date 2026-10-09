@@ -29,7 +29,10 @@ class CountingTranslator(LocalLLMTranslator):
     ) -> List[Optional[str]]:
         self.calls.append(list(clean_texts))
         if len(clean_texts) in self.fail_sizes:
-            return []  # malformed: wrong length
+            # A malformed answer: the server replied, but with the wrong number
+            # of items. An empty list means "no response at all", which is a
+            # transport failure and must NOT trigger the split path.
+            return [f"EN:{t}" for t in clean_texts[:-1]]
         return [f"EN:{t}" for t in clean_texts]
 
 
@@ -66,27 +69,26 @@ class SplitFallbackTests(unittest.TestCase):
 
 
 class OutputBudgetTests(unittest.TestCase):
+    """max_tokens is opt-in. A client-side guess truncated normal responses,
+    which broke JSON parsing and sent the batch down the split-retry path."""
+
     @staticmethod
     def _tr(**kwargs) -> LocalLLMTranslator:
         kwargs.setdefault("model", "test")
         return LocalLLMTranslator(**kwargs)
 
-    def test_budget_scales_with_input(self) -> None:
+    def test_no_cap_by_default(self) -> None:
         tr = self._tr()
-        self.assertLess(
-            tr._output_token_budget(["abc"]), tr._output_token_budget(["x" * 6000])
-        )
+        self.assertEqual(tr._output_token_budget(["x" * 6000]), 0)
+        self.assertEqual(tr._output_token_budget([""]), 0)
 
-    def test_budget_is_clamped(self) -> None:
-        tr = self._tr()
-        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
-        self.assertEqual(tr._output_token_budget(["x" * 500000]), tr.OUTPUT_BUDGET_MAX)
+    def test_default_payload_omits_max_tokens(self) -> None:
+        import inspect
+        src = inspect.getsource(OpenAICompatibleTranslator._translate_clean_texts)
+        self.assertIn("if budget > 0:", src)
+        self.assertNotIn('"max_tokens": self._output_token_budget', src)
 
-    def test_zero_means_auto(self) -> None:
-        tr = self._tr(max_tokens=0)
-        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
-
-    def test_explicit_override_wins_and_ignores_clamps(self) -> None:
+    def test_explicit_override_is_used_verbatim(self) -> None:
         tr = self._tr(max_tokens=12000)
         self.assertEqual(tr._output_token_budget(["abc"]), 12000)
         self.assertEqual(tr._output_token_budget(["x" * 500000]), 12000)
@@ -96,9 +98,14 @@ class OutputBudgetTests(unittest.TestCase):
         tr = create_translator({"engine": "local_llm", "local_llm_max_tokens": 1024})
         self.assertEqual(tr._output_token_budget(["abc"]), 1024)
 
-    def test_base_class_still_defaults_to_auto(self) -> None:
+    def test_zero_setting_means_no_cap(self) -> None:
+        from src.core.translators.manager import create_translator
+        tr = create_translator({"engine": "local_llm", "local_llm_max_tokens": 0})
+        self.assertEqual(tr._output_token_budget(["x" * 6000]), 0)
+
+    def test_base_class_also_sends_no_cap(self) -> None:
         tr = OpenAICompatibleTranslator(api_key="", model="m", base_url="http://x/v1")
-        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
+        self.assertEqual(tr._output_token_budget([""]), 0)
 
 
 class LineBreakToleranceTests(unittest.TestCase):
@@ -113,6 +120,23 @@ class LineBreakToleranceTests(unittest.TestCase):
 
     def test_empty_still_flagged(self) -> None:
         self.assertEqual(translation_issues("a", "  "), ["empty translation"])
+
+
+class TransportFailureTests(unittest.TestCase):
+    """A timeout must not be mistaken for a malformed batch."""
+
+    class _DeadTranslator(CountingTranslator):
+        async def _translate_clean_texts(self, clean_texts, source_lang, target_lang):
+            self.calls.append(list(clean_texts))
+            return []          # nothing came back
+
+    def test_no_response_does_not_fan_out(self) -> None:
+        tr = self._DeadTranslator()
+        batch = [f"line{i}" for i in range(16)]
+        out = _run(tr._translate_with_retry_and_fallback(batch, "ja", "en"))
+        self.assertIsNone(out)
+        # One attempt, not a cascade of further requests that would time out too.
+        self.assertEqual(len(tr.calls), 1)
 
 
 if __name__ == "__main__":

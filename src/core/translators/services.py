@@ -150,7 +150,16 @@ class SegmentBatchTranslator(BaseTranslator):
         translated_clean: Optional[List[Optional[str]]] = None
         for attempt in range(2):
             translated_clean = await self._translate_clean_texts(clean_batch, src, tgt)
-            if not translated_clean or len(translated_clean) != len(clean_batch):
+            if not translated_clean:
+                # Nothing came back at all: the server timed out or refused.
+                # Splitting would just issue more requests that time out too.
+                logger.warning(
+                    "No response for a batch of %d; not splitting. Check the server "
+                    "is reachable and that the request timeout is long enough.",
+                    len(clean_batch),
+                )
+                return None
+            if len(translated_clean) != len(clean_batch):
                 if len(clean_batch) > 1:
                     return await self._split_and_translate(clean_batch, src, tgt)
                 break
@@ -323,18 +332,21 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
     OUTPUT_BUDGET_MIN = 256
     OUTPUT_BUDGET_MAX = 4096
 
-    #: Explicit user cap; 0 keeps the automatic sizing below.
+    #: Explicit user cap. 0 means "send no limit and let the server decide",
+    #: which is the default.
+    #:
+    #: An automatic cap derived from the source length was tried and removed: a
+    #: CJK source is far shorter in characters than its English translation is
+    #: in tokens, so the estimate truncated normal responses. A truncated reply
+    #: is invalid JSON, which failed to parse, which triggered the split-and-
+    #: retry path, which truncated again - turning one request into several and
+    #: collapsing throughput. Capping output is the server's job (llama.cpp's
+    #: -n / n_predict); guessing it from the client was worse than not guessing.
     max_tokens_override: int = 0
 
     def _output_token_budget(self, clean_texts: Sequence[str]) -> int:
-        """Size max_tokens from the input so a runaway response is cut short."""
-        if getattr(self, "max_tokens_override", 0) > 0:
-            return int(self.max_tokens_override)
-        cls = type(self)
-        total_chars = sum(len(text or "") for text in clean_texts)
-        # ~2 chars per token is pessimistic enough for CJK sources.
-        estimated = int((total_chars / 2) * cls.OUTPUT_BUDGET_RATIO) + 64
-        return max(cls.OUTPUT_BUDGET_MIN, min(cls.OUTPUT_BUDGET_MAX, estimated))
+        """Return the explicit cap, or 0 to send none."""
+        return max(0, int(getattr(self, "max_tokens_override", 0) or 0))
 
     def _dump_exchange(self, kind: str, data: Any) -> None:
         """Write the raw request/response to logs when payload dumping is enabled.
@@ -387,8 +399,10 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                 {"role": "user", "content": json.dumps(clean_texts, ensure_ascii=False)},
             ],
             "temperature": 0.2,
-            "max_tokens": self._output_token_budget(clean_texts),
         }
+        budget = self._output_token_budget(clean_texts)
+        if budget > 0:
+            payload["max_tokens"] = budget
         self._dump_exchange("request", payload)
 
         for attempt in range(1, self.max_retries + 1):
