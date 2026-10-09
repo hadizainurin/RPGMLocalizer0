@@ -1732,7 +1732,10 @@ class EditorBackend(QObject):
     @pyqtSlot()
     def saveChanges(self) -> None:
         """Surgically save modified files, take atomic backups, and update translation cache."""
-        if not self._store or self._modified_count == 0:
+        # Must be the unsaved count, not the hand-edit count: machine
+        # translations are unsaved rows too, and gating on "modified" made Save
+        # silently refuse to write anything after an auto-translate run.
+        if not self._store or self._unsaved_count == 0:
             self.saveFinished.emit(True, "No changes to save.")
             return
 

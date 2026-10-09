@@ -90,3 +90,45 @@ class RetranslateTargetsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaveGatingTests(unittest.TestCase):
+    """Save must look at unsaved rows, not only hand-edited ones.
+
+    Gating on the hand-edit count meant an auto-translated project reported
+    "No changes to save" and never wrote the game files.
+    """
+
+    def setUp(self) -> None:
+        self.store = _store_with(["AA", "II"])
+        self.ids = [r["id"] for r in self.store.query_page(page_size=10)[0]]
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_auto_translation_is_unsaved_but_not_modified(self) -> None:
+        self.store.bulk_apply_auto_translations([(self.ids[0], "Aa")])
+        stats = self.store.get_stats()
+        self.assertEqual(stats["unsaved"], 1)
+        self.assertEqual(stats["modified"], 0)
+
+    def test_auto_translated_rows_reach_get_modified_entries(self) -> None:
+        self.store.bulk_apply_auto_translations([(self.ids[0], "Aa")])
+        changes, originals = self.store.get_modified_entries()
+        flat = {jp: txt for f in changes.values() for jp, txt in f.items()}
+        self.assertIn("Aa", flat.values())
+        self.assertTrue(originals)
+
+    def test_hand_edits_also_reach_the_writer(self) -> None:
+        self.store.update_entry(self.ids[1], "Ii")
+        changes, _ = self.store.get_modified_entries()
+        flat = {jp: txt for f in changes.values() for jp, txt in f.items()}
+        self.assertIn("Ii", flat.values())
+
+    def test_mark_saved_clears_the_unsaved_count(self) -> None:
+        self.store.bulk_apply_auto_translations([(self.ids[0], "Aa")])
+        fp = self.store.get_entries([self.ids[0]])[0]["file_path"]
+        self.store.mark_saved([fp])
+        self.assertEqual(self.store.get_stats()["unsaved"], 0)
+        # ...but it is still a translation, so the chip keeps counting it.
+        self.assertEqual(self.store.get_stats()["translated"], 1)

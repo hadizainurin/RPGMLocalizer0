@@ -288,8 +288,9 @@ Item {
     //: Ids of rows picked out by click-drag, Ctrl+click or Shift+click. Empty
     //: means "no multi-selection" and actions fall back to the right-clicked row.
     property var selectedIds: []
-    property int dragAnchorId: -1
+    property int dragAnchorIndex: -1
     property bool dragSelecting: false
+    property bool dragMoved: false
 
     function isRowSelected(entryId) {
         return root.selectedIds.indexOf(entryId) !== -1
@@ -297,7 +298,7 @@ Item {
 
     function clearSelection() {
         root.selectedIds = []
-        root.dragAnchorId = -1
+        root.dragAnchorIndex = -1
     }
 
     function toggleSelection(entryId) {
@@ -310,13 +311,25 @@ Item {
 
     //: Range select across the visible page, by row order rather than id, so a
     //: filtered view selects what the user actually sees between the two clicks.
-    function selectRange(fromId, toId) {
+    function selectIndexRange(a, b) {
         var page = editorBackend.currentPageEntryIds()
-        var a = page.indexOf(fromId)
-        var b = page.indexOf(toId)
-        if (a === -1 || b === -1) { root.selectedIds = [toId]; return }
         if (a > b) { var t = a; a = b; b = t }
-        root.selectedIds = page.slice(a, b + 1)
+        a = Math.max(0, a)
+        b = Math.min(page.length - 1, b)
+        if (b < a) { root.selectedIds = []; return }
+        var next = page.slice(a, b + 1)
+        // Re-assigning an identical array still churns every delegate binding.
+        if (next.length !== root.selectedIds.length ||
+            next[0] !== root.selectedIds[0] ||
+            next[next.length - 1] !== root.selectedIds[root.selectedIds.length - 1])
+            root.selectedIds = next
+    }
+
+    //: Row index under a point given in stringListView coordinates, or -1.
+    function rowIndexAt(viewX, viewY) {
+        return stringListView.indexAt(
+            stringListView.contentX + viewX,
+            stringListView.contentY + viewY)
     }
 
     //: Rows the next action applies to: the multi-selection if there is one,
@@ -343,6 +356,18 @@ Item {
             root.selectRow(res.nextId)
             root.contextEntryId = res.nextId
         }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+A"
+        context: Qt.WindowShortcut
+        onActivated: root.selectedIds = editorBackend.currentPageEntryIds()
+    }
+
+    Shortcut {
+        sequence: "Escape"
+        context: Qt.WindowShortcut
+        onActivated: root.clearSelection()
     }
 
     Shortcut {
@@ -1135,51 +1160,80 @@ Item {
                             cursorShape: Qt.PointingHandCursor
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
 
+                            //: Windows list-view semantics: plain click selects one
+                            //: row, Ctrl+click toggles, Shift+click extends, and a
+                            //: press-and-drag sweeps a range. The row is opened in
+                            //: the editor on release, not on press, so dragging out
+                            //: of a row does not also load it.
                             onPressed: (mouse) => {
                                 if (mouse.button === Qt.RightButton) {
                                     root.contextEntryId = model.entryId
-                                    // Right-clicking outside the selection acts on
-                                    // that row alone, which is what people expect.
                                     if (!root.isRowSelected(model.entryId))
                                         root.clearSelection()
                                     translateWithMenu.popup()
                                     return
                                 }
+
+                                root.contextEntryId = model.entryId
+
                                 if (mouse.modifiers & Qt.ControlModifier) {
                                     root.toggleSelection(model.entryId)
-                                    root.dragAnchorId = model.entryId
+                                    root.dragAnchorIndex = index
+                                    root.dragSelecting = false
                                     return
                                 }
-                                if ((mouse.modifiers & Qt.ShiftModifier) && root.dragAnchorId > 0) {
-                                    root.selectRange(root.dragAnchorId, model.entryId)
+                                if (mouse.modifiers & Qt.ShiftModifier) {
+                                    if (root.dragAnchorIndex < 0)
+                                        root.dragAnchorIndex = index
+                                    root.selectIndexRange(root.dragAnchorIndex, index)
+                                    root.dragSelecting = false
                                     return
                                 }
-                                // Plain press starts a drag-select from this row.
+
+                                root.dragAnchorIndex = index
                                 root.dragSelecting = true
-                                root.dragAnchorId = model.entryId
+                                root.dragMoved = false
                                 root.selectedIds = [model.entryId]
                             }
 
                             onPositionChanged: (mouse) => {
-                                if (!root.dragSelecting)
+                                if (!root.dragSelecting || root.dragAnchorIndex < 0)
                                     return
-                                var pt = mapToItem(stringListView.contentItem, mouse.x, mouse.y)
-                                var item = stringListView.itemAt(pt.x, pt.y)
-                                if (item && item.rowEntryId > 0 && root.dragAnchorId > 0)
-                                    root.selectRange(root.dragAnchorId, item.rowEntryId)
+                                var pt = mapToItem(stringListView, mouse.x, mouse.y)
+                                var idx = root.rowIndexAt(pt.x, pt.y)
+
+                                // Past the top or bottom edge: extend to the end and
+                                // keep scrolling, the way a real list view does.
+                                if (idx < 0) {
+                                    if (pt.y < 0) {
+                                        stringListView.contentY = Math.max(
+                                            0, stringListView.contentY - 12)
+                                        idx = root.rowIndexAt(pt.x, 1)
+                                    } else if (pt.y > stringListView.height) {
+                                        stringListView.contentY = Math.min(
+                                            Math.max(0, stringListView.contentHeight - stringListView.height),
+                                            stringListView.contentY + 12)
+                                        idx = root.rowIndexAt(pt.x, stringListView.height - 1)
+                                    }
+                                }
+                                if (idx < 0)
+                                    return
+                                root.dragMoved = true
+                                root.selectIndexRange(root.dragAnchorIndex, idx)
                             }
 
                             onReleased: (mouse) => {
                                 if (mouse.button !== Qt.LeftButton)
                                     return
-                                var wasDragging = root.dragSelecting
+                                var swept = root.dragSelecting && root.dragMoved
                                 root.dragSelecting = false
-                                // A press-and-release on one row is a plain click:
-                                // open it in the editor and drop the selection.
-                                if (wasDragging && root.selectedIds.length <= 1) {
-                                    root.clearSelection()
-                                    root.selectRow(model.entryId)
-                                }
+                                root.dragMoved = false
+                                if (swept)
+                                    return   // keep the swept range
+                                // A click that never moved: open this row and drop
+                                // the multi-selection.
+                                root.clearSelection()
+                                root.selectRow(model.entryId)
                             }
                         }
                     }
