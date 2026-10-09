@@ -1753,6 +1753,7 @@ class EditorBackend(QObject):
         # Default backup dir (.rpgm_backup next to each file) — never the game folder itself.
         backup_mgr = BackupManager()
         saved_files: list[str] = []
+        failures: list[tuple[str, str]] = []
 
         try:
             for fp, changes in changes_by_file.items():
@@ -1763,6 +1764,7 @@ class EditorBackend(QObject):
                 from src.core.parser_factory import get_parser
                 parser = get_parser(fp, settings)
                 if not parser:
+                    failures.append((os.path.basename(fp), "no parser for this file type"))
                     continue
 
                 # 1. Take atomic backup
@@ -1772,8 +1774,9 @@ class EditorBackend(QObject):
                     # 2. Apply translation using parser
                     new_data = parser.apply_translation(fp, changes)
                     if new_data is None:
-                        reason = getattr(parser, "last_apply_error", None)
-                        self.logger.warning(f"Failed to apply translations to {fp}: {reason or 'no data'}")
+                        reason = getattr(parser, "last_apply_error", None) or "parser returned no data"
+                        self.logger.warning("Failed to apply translations to %s: %s", fp, reason)
+                        failures.append((os.path.basename(fp), reason))
                         continue
 
                     # 3. Pre-write validation & serialization (same guards as the pipeline)
@@ -1794,6 +1797,7 @@ class EditorBackend(QObject):
                     saved_files.append(fp)
                 except Exception as file_exc:
                     self.logger.error(f"Error saving {fp}: {file_exc}")
+                    failures.append((os.path.basename(fp), str(file_exc)))
                     backups = backup_mgr.get_backups_for_file(fp)
                     if backups:
                         backup_mgr.restore_backup(backups[-1], fp)
@@ -1802,22 +1806,51 @@ class EditorBackend(QObject):
             if pipeline.cache:
                 pipeline.cache.save()
 
+            isolated: list[str] = []
             if saved_files:
                 backup_mgr.create_session_manifest()
                 self._store.mark_saved(saved_files)
 
-                # Automatically isolate conflicting WOLF archives if WOLF project was saved
+                # WOLF loads Data/*.wolf archives in preference to the loose .dat
+                # files, so edited files are ignored until the archives are moved
+                # aside. This used to reference an undefined `project_dir`, so the
+                # NameError was swallowed and isolation never actually ran.
+                project_dir = str(getattr(self.app_backend, "projectPath", "") or
+                                  settings.get("project_path", ""))
+                if not project_dir and saved_files:
+                    project_dir = os.path.dirname(os.path.dirname(saved_files[0]))
                 try:
                     from src.core.parsers.wolf_isolation import isolate_conflicting_wolf_archives
                     isolated = isolate_conflicting_wolf_archives(project_dir)
                     if isolated:
-                        self.logger.info("Isolated %d conflicting WOLF archive(s): %s", len(isolated), ", ".join(isolated))
+                        self.logger.info(
+                            "Isolated %d conflicting WOLF archive(s): %s",
+                            len(isolated), ", ".join(isolated),
+                        )
                 except Exception as iso_err:
                     self.logger.warning("Failed to isolate WOLF archives during save: %s", iso_err)
 
             self._refresh_page()
             self._refresh_stats()
-            self.saveFinished.emit(True, f"{len(saved_files)} files saved and backed up successfully.")
+
+            # Report honestly: "0 files saved successfully" read like success while
+            # every file had silently failed to apply.
+            if failures and not saved_files:
+                detail = "; ".join(f"{name}: {why}" for name, why in failures[:3])
+                more = f" (+{len(failures) - 3} more)" if len(failures) > 3 else ""
+                self.saveFinished.emit(False, f"Nothing was written - {detail}{more}")
+                return
+
+            message = f"{len(saved_files)} files saved and backed up successfully."
+            if isolated:
+                message += (
+                    f" {len(isolated)} WOLF archive(s) moved to Data/_wolf_original/ "
+                    "so the game reads the translated files."
+                )
+            if failures:
+                detail = "; ".join(f"{name}: {why}" for name, why in failures[:2])
+                message += f" {len(failures)} file(s) failed - {detail}"
+            self.saveFinished.emit(len(failures) == 0, message)
         except Exception as exc:
             self.logger.error(f"Error during editor save: {exc}")
             self.saveFinished.emit(False, f"Save error: {exc}")
