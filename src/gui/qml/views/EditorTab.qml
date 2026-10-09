@@ -51,21 +51,7 @@ Item {
         MenuSeparator {}
 
         MenuItem {
-            text: localeManager.strings.editor.deepl_open_web
-            enabled: root.contextEntryId > 0
-            onTriggered: {
-                root.selectRow(root.contextEntryId)
-                var url = editorBackend.deeplWebUrl(root.contextEntryId)
-                if (url !== "") {
-                    appBackend.openUrl(url)
-                    root.showNotice(localeManager.strings.editor.deepl_open_web_hint)
-                } else {
-                    root.showNotice(localeManager.strings.editor.deepl_nothing_to_send)
-                }
-            }
-        }
-        MenuItem {
-            text: localeManager.strings.editor.deepl_paste_next + "   (Ctrl+Shift+V)"
+            text: localeManager.strings.editor.paste_translation_next + "   (Ctrl+Shift+V)"
             enabled: root.contextEntryId > 0
             onTriggered: root.pasteAndAdvance(root.contextEntryId)
         }

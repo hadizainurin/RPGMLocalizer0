@@ -327,9 +327,6 @@
     "key_dialog_placeholder": "Paste your API key here",
     "key_dialog_paste": "Paste from clipboard",
     "key_dialog_clipboard_empty": "Nothing key-like on the clipboard. Copy the key first.",
-    "deepl_open_web": "🌐 Open this line in DeepL (browser)",
-    "deepl_open_web_hint": "Opened in DeepL. Copy the result, then press Ctrl+Shift+V here.",
-    "deepl_paste_next": "📋 Paste translation & next",
-    "deepl_nothing_to_send": "Nothing translatable in this entry."
+    "paste_translation_next": "📋 Paste translation & next"
   }
 }

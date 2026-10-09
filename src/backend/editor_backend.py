@@ -315,8 +315,10 @@ class AutoTranslateWorker(QThread):
 
     progress = pyqtSignal(int, int, str)   # (completed, total, status_msg)
     finished = pyqtSignal(int, str)        # (translated_count, message)
+    pageApplied = pyqtSignal(int)          # (rows_written) - UI can refresh mid-run
 
     _BATCH_SIZE = 100  # entries fetched per page from DB
+    _CANCEL_POLL_SECONDS = 0.2
 
     def __init__(
         self,
@@ -337,8 +339,36 @@ class AutoTranslateWorker(QThread):
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def cancel(self) -> None:
-        """Request graceful cancellation; the worker checks this flag between batches."""
+        """Request cancellation. Any request in flight is aborted, not awaited."""
         self._cancel = True
+
+    def _run_cancellable(self, loop, coro):
+        """Await `coro`, abandoning it promptly if cancel() is called.
+
+        A page of 100 lines is a single request that can take minutes on a local
+        model. Checking the flag only between pages made the Cancel button look
+        dead, so the request itself is cancelled instead. Returns None when the
+        run was cancelled.
+        """
+        import asyncio
+
+        async def runner():
+            task = asyncio.ensure_future(coro)
+            while not task.done():
+                if self._cancel:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    return None
+                await asyncio.sleep(self._CANCEL_POLL_SECONDS)
+            try:
+                return task.result()
+            except asyncio.CancelledError:
+                return None
+
+        return loop.run_until_complete(runner())
 
     def run(self) -> None:  # noqa: C901
         import asyncio
@@ -422,6 +452,23 @@ class AutoTranslateWorker(QThread):
                 original_by_id: dict[int, str] = {}
 
                 retry_ids: list[int] = []
+
+                def _flush_pairs() -> None:
+                    """Commit whatever is translated so far.
+
+                    Called after the main pass, after the retry pass, and on
+                    cancellation, so stopping a run never discards completed
+                    lines. The store commits immediately, so the work survives
+                    even if the app is closed straight afterwards.
+                    """
+                    nonlocal translated_count
+                    if not pairs:
+                        return
+                    written = self.store.bulk_apply_auto_translations(list(pairs))
+                    translated_count += len(pairs)
+                    pairs.clear()
+                    if written:
+                        self.pageApplied.emit(written)
 
                 def _apply(eid_raw: Any, translated: str, memoize: bool = True) -> None:
                     try:
@@ -514,9 +561,13 @@ class AutoTranslateWorker(QThread):
                         )
                         for req in merged_requests
                     ]
-                    results = loop.run_until_complete(
-                        translator.translate_batch(req_objs, progress_callback=on_item_done)
+                    results = self._run_cancellable(
+                        loop,
+                        translator.translate_batch(req_objs, progress_callback=on_item_done),
                     )
+                    if results is None:
+                        _flush_pairs()
+                        break
 
                     for req, res in zip(merged_requests, results):
                         if not res.success or not res.translated_text:
@@ -542,6 +593,9 @@ class AutoTranslateWorker(QThread):
                         else:
                             _apply(meta.get("key", 0), res.translated_text)
 
+                    # Commit the main pass before spending time on retries.
+                    _flush_pairs()
+
                 if retry_ids and not self._cancel:
                     retry_reqs = [
                         TranslationRequest(
@@ -551,16 +605,17 @@ class AutoTranslateWorker(QThread):
                         )
                         for eid in retry_ids if eid in clean_by_id
                     ]
-                    retry_results = loop.run_until_complete(
-                        translator.translate_batch(retry_reqs)
+                    retry_results = self._run_cancellable(
+                        loop, translator.translate_batch(retry_reqs)
                     )
+                    if retry_results is None:
+                        _flush_pairs()
+                        break
                     for eid, res in zip([e for e in retry_ids if e in clean_by_id], retry_results):
                         if res.success and res.translated_text:
                             _apply(eid, res.translated_text)
 
-                if pairs:
-                    self.store.bulk_apply_auto_translations(pairs)
-                    translated_count += len(pairs)
+                _flush_pairs()
 
                 completed += len(batch)
                 pct = min(100, int(completed / max(total_untranslated, 1) * 100))
@@ -589,7 +644,10 @@ class AutoTranslateWorker(QThread):
                 )
 
         if self._cancel:
-            self.finished.emit(translated_count, f"Cancelled. {translated_count} strings translated.")
+            self.finished.emit(
+                translated_count,
+                f"Cancelled - {translated_count} strings translated and saved.",
+            )
         else:
             self.finished.emit(translated_count, f"Done! {translated_count} strings translated successfully.")
 
@@ -1276,13 +1334,6 @@ class EditorBackend(QObject):
         self.singleTranslateRunningChanged.emit()
         self.singleTranslateFinished.emit(entry_id, ok, message)
 
-    #: DeepL's own web translator accepts a deep link of the form
-    #: #<source>/<target>/<text>. This is the public UI, not an internal API:
-    #: the browser opens, a person reads the result and copies it back. That is
-    #: an ordinary use of the free translator, and nothing here breaks when
-    #: DeepL changes their internals.
-    DEEPL_WEB_BASE = "https://www.deepl.com/translator"
-
     def _clean_source_for(self, entry_id: int) -> tuple[str, Any]:
         """Return (clean_text, segments) for an entry, or ("", None)."""
         from src.core.text_segmenter import clean_text
@@ -1305,23 +1356,6 @@ class EditorBackend(QObject):
         protected, term_map = glossary.protect_terms(original) if glossary else (original, {})
         clean, segs = clean_text(protected)
         return clean, (segs, term_map, glossary)
-
-    @pyqtSlot(int, result=str)
-    def deeplWebUrl(self, entry_id: int) -> str:
-        """Deep link that opens DeepL's web translator with this entry pre-filled."""
-        from urllib.parse import quote
-
-        clean, bundle = self._clean_source_for(entry_id)
-        if not clean or bundle is None:
-            return ""
-        settings = self.settings_backend.get_dict()
-        src = str(settings.get("source_lang", "auto") or "auto")
-        tgt = str(settings.get("target_lang", "en") or "en")
-        if src in ("", "auto"):
-            src = "auto"
-        # DeepL's fragment treats "/" as a separator, so it must stay encoded.
-        text = quote(clean, safe="")
-        return f"{self.DEEPL_WEB_BASE}#{src}/{tgt}/{text}"
 
     @pyqtSlot(int, result="QVariantMap")
     def pasteTranslationForEntry(self, entry_id: int) -> dict:
@@ -1525,6 +1559,7 @@ class EditorBackend(QObject):
             parent=self,
         )
         self._auto_translate_worker.progress.connect(self._on_auto_translate_progress)
+        self._auto_translate_worker.pageApplied.connect(self._on_auto_translate_page_applied)
         self._auto_translate_worker.finished.connect(self._on_auto_translate_finished)
         self._auto_translate_worker.start()
 
@@ -1561,6 +1596,16 @@ class EditorBackend(QObject):
         """Request graceful cancellation of the running auto-translate job."""
         if self._auto_translate_worker and self._auto_translate_worker.isRunning():
             self._auto_translate_worker.cancel()
+
+    def _on_auto_translate_page_applied(self, _rows: int) -> None:
+        """Refresh the grid as each page lands, so progress is visible mid-run.
+
+        The rows were already committed by the worker; this only re-reads them
+        so the user can watch the table fill instead of staring at a bar.
+        """
+        self._refresh_page()
+        self._refresh_stats()
+        self.hasUnsavedChangesChanged.emit()
 
     def _on_auto_translate_progress(self, pct: int, _total: int, msg: str) -> None:
         self._auto_translate_progress = pct
