@@ -302,6 +302,24 @@ class EditorStore:
                 (os.path.normcase(os.path.normpath(r["file_path"])), r["json_path"]): r["translated_text"]
                 for r in cur.fetchall()
             }
+
+            # Whether each row was machine-translated or hand-edited is not
+            # recoverable from the game files, so carry it across the rescan.
+            # Without this, reopening a project showed every row as Untranslated
+            # even though the translations were still there.
+            prior_sources: dict[tuple[str, str], str] = {}
+            try:
+                cur.execute(
+                    "SELECT file_path, json_path, translation_source FROM entries "
+                    "WHERE translation_source != ''"
+                )
+                prior_sources = {
+                    (os.path.normcase(os.path.normpath(r["file_path"])), r["json_path"]):
+                        r["translation_source"]
+                    for r in cur.fetchall()
+                }
+            except sqlite3.OperationalError:
+                prior_sources = {}
             cur.execute("DELETE FROM entries")
             cur.execute("DELETE FROM file_mtimes")
 
@@ -359,6 +377,23 @@ class EditorStore:
                         translated_text = pending
                         is_modified = 1
 
+                    if not translated_text or translated_text == original_text:
+                        translation_source = ""
+                    else:
+                        # What the row was last marked as wins: an unsaved machine
+                        # translation is carried over as a pending edit too, so
+                        # keying off is_modified alone would relabel every
+                        # auto-translated row as a hand edit.
+                        prior = prior_sources.get((norm_fp, path))
+                        if prior:
+                            translation_source = prior
+                        elif is_modified:
+                            translation_source = "manual"
+                        else:
+                            # Recovered from a backup or the cache: no other clue,
+                            # so it counts as machine output.
+                            translation_source = "auto"
+
                     # Context links for consecutive dialogue lines in the same file
                     prev_ctx = ""
                     next_ctx = ""
@@ -392,14 +427,16 @@ class EditorStore:
                         has_warning,
                         warning_msg,
                         is_modified,  # manual_wrap mirrors a carried-over user edit
+                        translation_source,
                     ))
 
             cur.executemany("""
                 INSERT INTO entries (
                     file_path, file_name, json_path, tag, category,
                     original_text, translated_text, prev_context, next_context,
-                    is_modified, line_count, has_warning, warning_msg, manual_wrap
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_modified, line_count, has_warning, warning_msg, manual_wrap,
+                    translation_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
 
             cur.executemany(
