@@ -212,6 +212,7 @@ class ScanWorker(QThread):
         self.store = store
         self.settings = settings
         self.force_rescan = force_rescan
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def run(self) -> None:
         try:
