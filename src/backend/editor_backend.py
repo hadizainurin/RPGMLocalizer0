@@ -411,6 +411,7 @@ class AutoTranslateWorker(QThread):
         seen_translations: dict[str, str] = {}
         cache_hits = 0
         memo_hits = 0
+        flagged_count = 0
 
         translation_cache = None
         if self.settings.get("use_cache", True):
@@ -470,7 +471,21 @@ class AutoTranslateWorker(QThread):
                     if written:
                         self.pageApplied.emit(written)
 
-                def _apply(eid_raw: Any, translated: str, memoize: bool = True) -> None:
+                def _apply(
+                    eid_raw: Any,
+                    translated: str,
+                    memoize: bool = True,
+                    allow_issues: bool = False,
+                ) -> None:
+                    """Record a translation for an entry.
+
+                    `allow_issues` is set on the retry pass: by then the line has
+                    had its second chance, so a remaining structural warning must
+                    not cause the translation to be thrown away. Discarding it
+                    silently left the row Untranslated with no trace of the work,
+                    which looked like the translator had simply skipped it.
+                    """
+                    nonlocal flagged_count
                     try:
                         eid = int(eid_raw)
                     except (ValueError, TypeError):
@@ -482,9 +497,12 @@ class AutoTranslateWorker(QThread):
                     if glossary:
                         restored = glossary.restore_terms(restored, terms_by_id.get(eid, {}))
                     if translation_issues(original_by_id[eid], restored):
-                        if eid not in retry_ids:
-                            retry_ids.append(eid)
-                        return
+                        if not allow_issues:
+                            if eid not in retry_ids:
+                                retry_ids.append(eid)
+                            return
+                        # Keep it, but it lands with a warning for review.
+                        flagged_count += 1
                     pairs.append((eid, restored))
                     if memoize:
                         # Key on the cleaned source so the next identical string
@@ -613,7 +631,7 @@ class AutoTranslateWorker(QThread):
                         break
                     for eid, res in zip([e for e in retry_ids if e in clean_by_id], retry_results):
                         if res.success and res.translated_text:
-                            _apply(eid, res.translated_text)
+                            _apply(eid, res.translated_text, allow_issues=True)
 
                 _flush_pairs()
 
@@ -649,7 +667,12 @@ class AutoTranslateWorker(QThread):
                 f"Cancelled - {translated_count} strings translated and saved.",
             )
         else:
-            self.finished.emit(translated_count, f"Done! {translated_count} strings translated successfully.")
+            message = f"Done! {translated_count} strings translated successfully."
+            if flagged_count:
+                message += (
+                    f" {flagged_count} need review - see the Warnings filter."
+                )
+            self.finished.emit(translated_count, message)
 
 
 #: Engines offered in the editor's right-click "Translate with" menu. Order is
@@ -1400,7 +1423,9 @@ class EditorBackend(QObject):
         text = worker.results.get(entry_id)
         if not text:
             return
-        updated = self._store.update_entry(entry_id, text)
+        # Engine output, even though it arrives one row at a time through the
+        # same write path a person's edit uses.
+        updated = self._store.update_entry(entry_id, text, source="auto")
         if updated:
             self._table_model.update_row_by_id(entry_id, updated)
             if entry_id == self._selected_entry_id:

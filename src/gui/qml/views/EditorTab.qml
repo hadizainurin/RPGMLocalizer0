@@ -381,14 +381,15 @@ Item {
     }
 
     function selectRow(entryId) {
-        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
+        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.userEdited && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
             editorBackend.updateSelectedTranslation(transTextArea.text)
+            transTextArea.userEdited = false
         }
         editorBackend.selectEntryById(entryId)
     }
 
     function changePage(newPage) {
-        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
+        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.userEdited && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
             editorBackend.updateSelectedTranslation(transTextArea.text)
         }
         editorBackend.setPage(newPage)
@@ -397,10 +398,10 @@ Item {
     // Commit any text still sitting in the detail editor (not yet applied via
     // Ctrl+Enter / row change) so a direct Save never silently drops it.
     readonly property bool hasPendingEdit: !!(editorBackend.selectedEntry && editorBackend.selectedEntry.id)
-        && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")
+        && transTextArea.userEdited && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")
 
     function flushPendingEdit() {
-        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
+        if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.userEdited && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
             editorBackend.updateSelectedTranslation(transTextArea.text)
         }
     }
@@ -1516,15 +1517,36 @@ Item {
                                 anchors.margins: 6
                                 TextArea {
                                     id: transTextArea
+                                    //: True only once the person has typed in this
+                                    //: box since the row was loaded. Anything the
+                                    //: backend writes (a translation landing, a
+                                    //: revert, a row change) resets it, so the
+                                    //: editor never writes its buffer back over a
+                                    //: value it did not author.
+                                    property bool userEdited: false
+
                                     text: editorBackend.selectedEntry.translated_text || ""
+                                    onTextChanged: {
+                                        if (activeFocus)
+                                            userEdited = true
+                                    }
+
                                     wrapMode: Text.Wrap
                                     color: t ? t.textPrimary : "#ffffff"
                                     font.pixelSize: 12
                                     selectByMouse: true
 
+                                    Connections {
+                                        target: editorBackend
+                                        function onSelectedEntryChanged() {
+                                            transTextArea.userEdited = false
+                                        }
+                                    }
+
                                     Keys.onPressed: (event) => {
                                         if (event.key === Qt.Key_Return && (event.modifiers & Qt.ControlModifier)) {
                                             editorBackend.updateSelectedTranslation(transTextArea.text)
+                                            transTextArea.userEdited = false
                                             event.accepted = true
                                         }
                                     }
@@ -1566,6 +1588,7 @@ Item {
                         onClicked: {
                             editorBackend.revertSelectedEntry()
                             transTextArea.text = editorBackend.selectedEntry.translated_text || ""
+                            transTextArea.userEdited = false
                         }
                     }
 
@@ -1574,7 +1597,10 @@ Item {
                         label: localeManager.strings.editor.apply_button
                         variant: "accent"
                         implicitHeight: 26
-                        onClicked: editorBackend.updateSelectedTranslation(transTextArea.text)
+                        onClicked: {
+                            editorBackend.updateSelectedTranslation(transTextArea.text)
+                            transTextArea.userEdited = false
+                        }
                     }
                 }
             }

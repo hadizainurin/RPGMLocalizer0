@@ -538,8 +538,17 @@ class EditorStore:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def update_entry(self, entry_id: int, new_translated: str) -> dict | None:
-        """Update translation for an entry, recomputing warnings and dirty flag."""
+    def update_entry(
+        self, entry_id: int, new_translated: str, source: str = "manual"
+    ) -> dict | None:
+        """Update translation for an entry, recomputing warnings and dirty flag.
+
+        `source` records who produced the text: "manual" for a person typing in
+        the editor, "auto" for engine output written through this same path (the
+        right-click translate actions). Getting this wrong files machine
+        translations under "Edited by me" instead of "Translated".
+        """
+        source = source if source in ("manual", "auto") else "manual"
         with self._lock:
             cur = self.conn.cursor()
             cur.execute("SELECT original_text, tag FROM entries WHERE id = ?", (entry_id,))
@@ -565,10 +574,11 @@ class EditorStore:
                     line_count = ?,
                     has_warning = ?,
                     warning_msg = ?,
-                    manual_wrap = 1,
-                    translation_source = 'manual'
+                    manual_wrap = ?,
+                    translation_source = ?
                 WHERE id = ?
-            """, (new_translated, lines, has_warning, warning_msg, entry_id))
+            """, (new_translated, lines, has_warning, warning_msg,
+                  1 if source == "manual" else 0, source, entry_id))
             self.conn.commit()
 
             return self.get_entry(entry_id)
