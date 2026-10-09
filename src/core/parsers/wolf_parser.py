@@ -31,6 +31,26 @@ from .wolf_binary import (
     translatable_fields,
 )
 
+
+#: WOLF command id -> entry tag. command_text_slots() already calls 106/122/150
+#: "player-facing dialogue, choices, or UI text", but the extractors used to tag
+#: every non-101/102 command "system", which filed real dialogue under
+#: System & Terms. Tagging by command kind keeps that information.
+WOLF_CID_TAGS = {
+    CID_MESSAGE: "dialogue",
+    CID_BATTLE_MESSAGE: "battle_message",
+    CID_CHOICES: "choice",
+    CID_ERROR_MESSAGE: "error_message",
+    CID_PICTURE_TEXT: "picture_text",
+    CID_STRING_OP: "string_op",
+}
+
+
+def wolf_tag_for(cid: int) -> str:
+    """Tag describing what kind of command a string came from."""
+    return WOLF_CID_TAGS.get(cid, "system")
+
+
 logger = logging.getLogger("WolfParser")
 
 WOLF_DRAW_PRIMITIVES: tuple[str, ...] = ("<square", "<line", "<grad")
@@ -131,13 +151,7 @@ class WolfParser(BaseParser):
                         continue
                     if any(p.search(text) for p in self.blacklist_patterns):
                         continue
-                    if cmd.cid in (CID_MESSAGE, CID_BATTLE_MESSAGE):
-                        tag = "dialogue"
-                    elif cmd.cid == CID_CHOICES:
-                        tag = "choice"
-                    else:
-                        tag = "system"
-                    entries.append((locator, text, tag))
+                    entries.append((locator, text, wolf_tag_for(cmd.cid)))
         return entries
 
     def _extract_common_events(self, file_path: str) -> List[Tuple[str, str, str]]:
@@ -152,13 +166,7 @@ class WolfParser(BaseParser):
                     continue
                 if any(p.search(text) for p in self.blacklist_patterns):
                     continue
-                if cmd.cid in (CID_MESSAGE, CID_BATTLE_MESSAGE):
-                    tag = "dialogue"
-                elif cmd.cid == CID_CHOICES:
-                    tag = "choice"
-                else:
-                    tag = "system"
-                entries.append((locator, text, tag))
+                entries.append((locator, text, wolf_tag_for(cmd.cid)))
         return entries
 
     @staticmethod

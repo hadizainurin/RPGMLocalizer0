@@ -338,6 +338,8 @@
     "restore_many": "↩ Restore {count} lines to original",
     "restore_done": "{count} lines restored to the original text.",
     "select_all_page": "Select all on this page",
-    "clear_selection": "Clear selection"
+    "clear_selection": "Clear selection",
+    "export_translations_button": "⬇ Export Translations",
+    "import_translations_button": "⬆ Import Translations"
   }
 }

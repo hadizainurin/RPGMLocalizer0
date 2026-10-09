@@ -6,6 +6,7 @@ background project scanning, escape code safety, and surgical save operations.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -1638,6 +1639,98 @@ class EditorBackend(QObject):
         except Exception as exc:
             return {"ok": False, "message": f"Could not save the key: {exc}"}
         return {"ok": True, "message": "Key saved."}
+
+    #: Where the sidecar lives by default. Inside the game folder, so the
+    #: translation travels with a copy of the game instead of being stranded in
+    #: the app's data directory.
+    SIDECAR_NAME = "rpgm_translations.json"
+
+    @pyqtSlot(result=str)
+    def defaultSidecarPath(self) -> str:
+        """Default export/import path: beside the game, overridable in Settings."""
+        configured = ""
+        try:
+            configured = str(self.settings_backend.get_dict().get("sidecar_path", "") or "")
+        except Exception:
+            configured = ""
+        if configured:
+            return configured
+        project = str(getattr(self.app_backend, "projectPath", "") or "")
+        if not project:
+            return ""
+        return os.path.join(project, self.SIDECAR_NAME)
+
+    @pyqtSlot(str, bool, result="QVariantMap")
+    def exportTranslations(self, path: str = "", translated_only: bool = True) -> dict:
+        """Write every translation to a portable JSON sidecar."""
+        if not self._store:
+            return {"ok": False, "message": "No project loaded.", "count": 0}
+        target = path or self.defaultSidecarPath()
+        if not target:
+            return {"ok": False, "message": "No export path set.", "count": 0}
+
+        records = self._store.export_translations(translated_only=translated_only)
+        settings = self.settings_backend.get_dict()
+        payload = {
+            "format": "rpgm-localizer-translations",
+            "version": 1,
+            "source_lang": settings.get("source_lang", "auto"),
+            "target_lang": settings.get("target_lang", "en"),
+            "project": os.path.basename(str(getattr(self.app_backend, "projectPath", "") or "")),
+            "count": len(records),
+            "entries": records,
+        }
+        try:
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=1)
+        except Exception as exc:
+            self.logger.error("Translation export failed: %s", exc)
+            return {"ok": False, "message": f"Export failed: {exc}", "count": 0}
+
+        self.logger.info("Exported %d translations to %s", len(records), target)
+        return {
+            "ok": True,
+            "count": len(records),
+            "message": f"Exported {len(records)} translations to {os.path.basename(target)}",
+            "path": target,
+        }
+
+    @pyqtSlot(str, bool, result="QVariantMap")
+    def importTranslations(self, path: str = "", overwrite: bool = False) -> dict:
+        """Apply a sidecar onto the current project. Save then patches the game."""
+        if not self._store:
+            return {"ok": False, "message": "No project loaded.", "count": 0}
+        target = path or self.defaultSidecarPath()
+        if not target or not os.path.isfile(target):
+            return {"ok": False, "message": f"No translation file at {target}", "count": 0}
+
+        try:
+            with open(target, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            return {"ok": False, "message": f"Could not read the file: {exc}", "count": 0}
+
+        records = payload.get("entries") if isinstance(payload, dict) else payload
+        if not isinstance(records, list):
+            return {"ok": False, "message": "That file is not a translation export.", "count": 0}
+
+        result = self._store.import_translations(records, overwrite=overwrite)
+        self._refresh_page()
+        self._refresh_stats()
+        self.hasUnsavedChangesChanged.emit()
+
+        parts = [f"{result['applied']} applied"]
+        if result["skipped"]:
+            parts.append(f"{result['skipped']} skipped")
+        if result["mismatched"]:
+            parts.append(f"{result['mismatched']} did not match the source text")
+        self.logger.info("Imported translations: %s", ", ".join(parts))
+        return {
+            "ok": result["applied"] > 0,
+            "count": result["applied"],
+            "message": ", ".join(parts) + ". Press Save to patch the game.",
+        }
 
     @pyqtSlot()
     def revertSelectedEntry(self) -> None:

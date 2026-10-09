@@ -39,6 +39,9 @@ class SettingsBackend(QObject):
             "export_only": False,
             "export_distinct": False,
             "import_path": "",
+            # Where the editor's translation sidecar is written. Empty means
+            # "<game folder>/rpgm_translations.json", so it travels with the game.
+            "sidecar_path": "",
             "regex_blacklist": "",
             "batch_size": 15,
             "concurrent_requests": 8,
@@ -439,6 +442,14 @@ class SettingsBackend(QObject):
     @localLlmMaxTokens.setter
     def localLlmMaxTokens(self, val: int) -> None:
         self._set("local_llm_max_tokens", max(0, int(val)))
+
+    @pyqtProperty(str, notify=settingsChanged)
+    def sidecarPath(self) -> str:
+        return str(self._get("sidecar_path", ""))
+
+    @sidecarPath.setter
+    def sidecarPath(self, val: str) -> None:
+        self._set("sidecar_path", val)
 
     @pyqtProperty(str, notify=settingsChanged)
     def localLlmPrompt(self) -> str:

@@ -543,6 +543,30 @@ Item {
                 onClicked: replaceDialog.openWith(editorBackend.selectedFile)
             }
 
+            //: Export / import the translation dictionary. Translations live in
+            //: the app's data directory, not the game folder, so without this a
+            //: fresh copy of the game cannot be patched on another machine.
+            TactileButton {
+                label: localeManager.strings.editor.export_translations_button
+                variant: "ghost"
+                enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating
+                onClicked: {
+                    root.flushPendingEdit()
+                    var res = editorBackend.exportTranslations("", true)
+                    root.showNotice(res.message)
+                }
+            }
+
+            TactileButton {
+                label: localeManager.strings.editor.import_translations_button
+                variant: "ghost"
+                enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating
+                onClicked: {
+                    var res = editorBackend.importTranslations("", false)
+                    root.showNotice(res.message)
+                }
+            }
+
             // Save Changes Button
             TactileButton {
                 label: editorBackend.unsavedCount > 0

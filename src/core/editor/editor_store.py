@@ -38,10 +38,26 @@ def _compute_sample_crc(file_path: str) -> int:
         return 0
 
 
+#: Tags whose text is shown to the player, so it belongs with the dialogue the
+#: translator works through rather than under System & Terms. WOLF's string
+#: operations and picture text carry a great deal of real dialogue.
+PLAYER_FACING_TAGS = {
+    "dialogue", "message", "battle_message", "error_message",
+    "choice", "choices", "picture_text", "string_op", "scroll_text",
+}
+
+
 def classify_category(file_name: str, tag: str = "") -> str:
     """Categorize an RPG Maker or WOLF RPG game data string into logical translation sections."""
     fn = file_name.lower()
     t = (tag or "").lower()
+
+    # Exact tags win over the substring sniffing below: a tag like
+    # "system_message" is a message, and checking "system" first filed it as a
+    # system term. The parser knows what kind of command the text came from, so
+    # trust that before guessing from the file name.
+    if t in PLAYER_FACING_TAGS:
+        return "dialogues"
 
     if "system" in t:
         return "system"
@@ -803,6 +819,105 @@ class EditorStore:
             cur.execute(f"SELECT * FROM entries WHERE id IN ({placeholders})", list(entry_ids))
             by_id = {row["id"]: dict(row) for row in cur.fetchall()}
         return [by_id[i] for i in entry_ids if i in by_id]
+
+    def export_translations(self, translated_only: bool = True) -> list[dict[str, str]]:
+        """Dump every translation as portable records.
+
+        Keyed on (file_name, json_path) rather than the absolute path, so the
+        file travels with a copy of the game and applies to a fresh extract on
+        another machine. original_text is included so an import can verify it is
+        applying the translation to the same source line.
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            sql = (
+                "SELECT file_name, json_path, original_text, translated_text, "
+                "translation_source FROM entries"
+            )
+            if translated_only:
+                sql += (" WHERE translated_text != '' "
+                        "AND translated_text != original_text")
+            sql += " ORDER BY file_name, id"
+            return [
+                {
+                    "file": r["file_name"],
+                    "path": r["json_path"],
+                    "original": r["original_text"],
+                    "translated": r["translated_text"],
+                    "source": r["translation_source"] or "auto",
+                }
+                for r in cur.execute(sql).fetchall()
+            ]
+
+    def import_translations(
+        self, records: list[dict[str, str]], overwrite: bool = False
+    ) -> dict[str, int]:
+        """Apply exported records back onto the current project.
+
+        Rows are matched on (file_name, json_path) and only applied when the
+        stored original still matches, so a sidecar from a different version of
+        the game cannot quietly write a translation onto the wrong line.
+        """
+        applied = skipped = mismatched = 0
+        with self._lock:
+            cur = self.conn.cursor()
+            updates: list[tuple] = []
+            for rec in records:
+                file_name = str(rec.get("file") or "")
+                json_path = str(rec.get("path") or "")
+                translated = str(rec.get("translated") or "")
+                original = rec.get("original")
+                if not file_name or not json_path or not translated:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    "SELECT id, original_text, translated_text FROM entries "
+                    "WHERE file_name = ? AND json_path = ?",
+                    (file_name, json_path),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    skipped += 1
+                    continue
+                if original is not None and row["original_text"] != original:
+                    mismatched += 1
+                    continue
+                already = (row["translated_text"]
+                           and row["translated_text"] != row["original_text"])
+                if already and not overwrite:
+                    skipped += 1
+                    continue
+
+                warnings = validate_codes(row["original_text"], translated)
+                lines, overflow = check_line_overflow(translated, "")
+                if overflow:
+                    warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
+                source = str(rec.get("source") or "auto")
+                updates.append((
+                    translated, lines, 1 if warnings else 0,
+                    " | ".join(warnings) if warnings else "",
+                    source if source in ("auto", "manual") else "auto",
+                    row["id"],
+                ))
+                applied += 1
+
+            if updates:
+                cur.executemany(
+                    """
+                    UPDATE entries
+                    SET translated_text = ?,
+                        is_modified = 1,
+                        line_count = ?,
+                        has_warning = ?,
+                        warning_msg = ?,
+                        translation_source = ?
+                    WHERE id = ?
+                    """,
+                    updates,
+                )
+                self.conn.commit()
+        return {"applied": applied, "skipped": skipped, "mismatched": mismatched}
 
     def get_stats(self) -> dict[str, int]:
         """Counts for the status chips: total, unsaved, translated, modified, warnings, untranslated."""
