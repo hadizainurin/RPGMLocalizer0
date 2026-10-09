@@ -832,6 +832,8 @@ class EditorBackend(QObject):
         # Stats
         self._total_project_count: int = 0
         self._modified_count: int = 0
+        self._unsaved_count: int = 0
+        self._translated_count: int = 0
         self._warning_count: int = 0
         self._untranslated_count: int = 0
 
@@ -911,6 +913,16 @@ class EditorBackend(QObject):
         return self._total_pages
 
     @pyqtProperty(int, notify=statsChanged)
+    def translatedCount(self) -> int:
+        """Rows written by a translation engine and not since hand-edited."""
+        return self._translated_count
+
+    @pyqtProperty(int, notify=statsChanged)
+    def unsavedCount(self) -> int:
+        """Rows with unsaved changes, whatever produced them."""
+        return self._unsaved_count
+
+    @pyqtProperty(int, notify=statsChanged)
     def modifiedCount(self) -> int:
         return self._modified_count
 
@@ -924,7 +936,7 @@ class EditorBackend(QObject):
 
     @pyqtProperty(bool, notify=hasUnsavedChangesChanged)
     def hasUnsavedChanges(self) -> bool:
-        return self._modified_count > 0
+        return self._unsaved_count > 0
 
     @pyqtProperty("QVariantMap", notify=selectedEntryChanged)
     def selectedEntry(self) -> dict[str, Any]:
@@ -1060,6 +1072,8 @@ class EditorBackend(QObject):
         self._set_selected_entry_dict({})
         self._total_project_count = 0
         self._modified_count = 0
+        self._unsaved_count = 0
+        self._translated_count = 0
         self._warning_count = 0
         self._untranslated_count = 0
         self.statsChanged.emit()
@@ -1182,6 +1196,8 @@ class EditorBackend(QObject):
         if not self._store:
             self._total_project_count = 0
             self._modified_count = 0
+            self._unsaved_count = 0
+            self._translated_count = 0
             self._warning_count = 0
             self._untranslated_count = 0
             self.statsChanged.emit()
@@ -1189,7 +1205,10 @@ class EditorBackend(QObject):
             return
         stats = self._store.get_stats()
         self._total_project_count = stats.get("total", 0)
+        # Save button counts every unsaved row; the chip counts hand edits only.
+        self._unsaved_count = stats.get("unsaved", stats.get("modified", 0))
         self._modified_count = stats.get("modified", 0)
+        self._translated_count = stats.get("translated", 0)
         self._warning_count = stats.get("warnings", 0)
         self._untranslated_count = stats.get("untranslated", 0)
         self.statsChanged.emit()

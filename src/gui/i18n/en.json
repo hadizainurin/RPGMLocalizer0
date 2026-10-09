@@ -288,7 +288,7 @@
       "plugins": "🔌 Plugins & Scripts",
       "other": "📁 Other Files"
     },
-    "status_chip_modified": "Modified",
+    "status_chip_modified": "✎ Edited by me",
     "status_chip_warnings": "Warnings",
     "status_chip_untranslated": "Untranslated",
     "empty_no_folder_title": "No Game Folder Selected Yet",
@@ -327,6 +327,7 @@
     "key_dialog_placeholder": "Paste your API key here",
     "key_dialog_paste": "Paste from clipboard",
     "key_dialog_clipboard_empty": "Nothing key-like on the clipboard. Copy the key first.",
-    "paste_translation_next": "📋 Paste translation & next"
+    "paste_translation_next": "📋 Paste translation & next",
+    "status_chip_translated": "✓ Translated"
   }
 }

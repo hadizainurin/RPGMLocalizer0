@@ -391,7 +391,7 @@ Item {
                                 ? editorBackend.autoTranslateStatus
                                 : (editorBackend.projectLoaded
                                     ? (editorBackend.totalProjectCount > 0
-                                        ? I18n.format(localeManager.strings.editor.status_loaded, {count: editorBackend.totalCount, total: editorBackend.totalProjectCount, modified: editorBackend.modifiedCount})
+                                        ? I18n.format(localeManager.strings.editor.status_loaded, {count: editorBackend.totalCount, total: editorBackend.totalProjectCount, modified: editorBackend.unsavedCount})
                                         : localeManager.strings.editor.status_no_data)
                                     : localeManager.strings.editor.status_waiting)))
                     font.pixelSize: 12
@@ -435,10 +435,10 @@ Item {
 
             // Save Changes Button
             TactileButton {
-                label: editorBackend.modifiedCount > 0
-                    ? I18n.format(localeManager.strings.editor.save_button_with_count, {count: editorBackend.modifiedCount})
+                label: editorBackend.unsavedCount > 0
+                    ? I18n.format(localeManager.strings.editor.save_button_with_count, {count: editorBackend.unsavedCount})
                     : localeManager.strings.editor.save_button
-                variant: editorBackend.modifiedCount > 0 ? "accent" : "ghost"
+                variant: editorBackend.unsavedCount > 0 ? "accent" : "ghost"
                 enabled_: (editorBackend.hasUnsavedChanges || root.hasPendingEdit) && !editorBackend.isScanning && !editorBackend.isAutoTranslating && !appBackend.isRunning
                 onClicked: {
                     root.flushPendingEdit()
@@ -784,6 +784,7 @@ Item {
                         Repeater {
                             model: [
                                 { key: "all", label: localeManager.strings.common.all },
+                                { key: "translated", label: localeManager.strings.editor.status_chip_translated + " (" + editorBackend.translatedCount + ")" },
                                 { key: "modified", label: localeManager.strings.editor.status_chip_modified + " (" + editorBackend.modifiedCount + ")" },
                                 { key: "warnings", label: localeManager.strings.editor.status_chip_warnings + " (" + editorBackend.warningCount + ")" },
                                 { key: "untranslated", label: localeManager.strings.editor.status_chip_untranslated + " (" + editorBackend.untranslatedCount + ")" }

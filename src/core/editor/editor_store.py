@@ -151,13 +151,15 @@ class EditorStore:
                 line_count INTEGER DEFAULT 1,
                 has_warning INTEGER DEFAULT 0,
                 warning_msg TEXT DEFAULT '',
-                manual_wrap INTEGER DEFAULT 0
+                manual_wrap INTEGER DEFAULT 0,
+                translation_source TEXT DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_entries_file ON entries(file_name);
             CREATE INDEX IF NOT EXISTS idx_entries_cat ON entries(category);
             CREATE INDEX IF NOT EXISTS idx_entries_modified ON entries(is_modified);
             CREATE INDEX IF NOT EXISTS idx_entries_warning ON entries(has_warning);
+            CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                 file_name,
@@ -192,6 +194,26 @@ class EditorStore:
                     cur.execute("ALTER TABLE file_mtimes ADD COLUMN file_size INTEGER DEFAULT 0")
                 if "sample_crc" not in existing_cols:
                     cur.execute("ALTER TABLE file_mtimes ADD COLUMN sample_crc INTEGER DEFAULT 0")
+
+            # translation_source separates machine output from hand edits. Older
+            # caches predate it, so add it and backfill from what we can infer:
+            # manual_wrap marks a row the user typed in, anything else that has a
+            # translation came from the translator.
+            cur.execute("PRAGMA table_info(entries)")
+            entry_cols = {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in cur.fetchall()}
+            if entry_cols and "translation_source" not in entry_cols:
+                cur.execute("ALTER TABLE entries ADD COLUMN translation_source TEXT DEFAULT ''")
+                cur.execute("""
+                    UPDATE entries
+                    SET translation_source = CASE
+                        WHEN translated_text = original_text OR translated_text = '' THEN ''
+                        WHEN manual_wrap = 1 THEN 'manual'
+                        ELSE 'auto'
+                    END
+                """)
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source)"
+                )
             self.conn.commit()
 
     def is_cache_valid(self, project_files: list[str]) -> bool:
@@ -419,13 +441,21 @@ class EditorStore:
 
             # 4. Status filter
             if status_filter == "modified":
-                clauses.append("entries.is_modified = 1")
+                # Hand-edited by the user, as opposed to machine output.
+                clauses.append("entries.translation_source = 'manual'")
             elif status_filter == "warnings":
                 clauses.append("entries.has_warning = 1")
             elif status_filter == "untranslated":
                 clauses.append("(entries.translated_text = entries.original_text OR entries.translated_text = '')")
             elif status_filter == "translated":
-                clauses.append("(entries.translated_text != entries.original_text AND entries.translated_text != '')")
+                # Machine-translated and not since edited by hand.
+                clauses.append(
+                    "(entries.translation_source = 'auto'"
+                    " AND entries.translated_text != entries.original_text"
+                    " AND entries.translated_text != '')"
+                )
+            elif status_filter == "unsaved":
+                clauses.append("entries.is_modified = 1")
 
             where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -442,7 +472,8 @@ class EditorStore:
             cur.execute(f"""
                 SELECT id, file_path, file_name, json_path, tag, category,
                        original_text, translated_text, prev_context, next_context,
-                       is_modified, line_count, has_warning, warning_msg, manual_wrap
+                       is_modified, line_count, has_warning, warning_msg, manual_wrap,
+                       translation_source
                 FROM entries {where_sql}
                 ORDER BY id ASC
                 LIMIT ? OFFSET ?
@@ -486,7 +517,8 @@ class EditorStore:
                     line_count = ?,
                     has_warning = ?,
                     warning_msg = ?,
-                    manual_wrap = 1
+                    manual_wrap = 1,
+                    translation_source = 'manual'
                 WHERE id = ?
             """, (new_translated, lines, has_warning, warning_msg, entry_id))
             self.conn.commit()
@@ -513,7 +545,8 @@ class EditorStore:
                     line_count = ?,
                     has_warning = 0,
                     warning_msg = '',
-                    manual_wrap = 0
+                    manual_wrap = 0,
+                    translation_source = ''
                 WHERE id = ?
             """, (orig, lines, entry_id))
             self.conn.commit()
@@ -663,7 +696,7 @@ class EditorStore:
             return cat_map
 
     def get_stats(self) -> dict[str, int]:
-        """Return statistical counts: total, modified, warnings, untranslated."""
+        """Counts for the status chips: total, unsaved, translated, modified, warnings, untranslated."""
         with self._lock:
             cur = self.conn.cursor()
             cur.execute("""
@@ -671,15 +704,23 @@ class EditorStore:
                     COUNT(*),
                     SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN has_warning = 1 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN translated_text = original_text OR translated_text = '' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN translated_text = original_text OR translated_text = '' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN translation_source = 'auto'
+                                  AND translated_text != original_text
+                                  AND translated_text != '' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN translation_source = 'manual' THEN 1 ELSE 0 END)
                 FROM entries
             """)
             row = cur.fetchone()
             return {
                 "total": row[0] or 0,
-                "modified": row[1] or 0,
+                # Rows with unsaved changes. Drives the Save button, so it keeps
+                # counting both machine and hand edits.
+                "unsaved": row[1] or 0,
+                "modified": row[5] or 0,     # hand-edited by the user
                 "warnings": row[2] or 0,
                 "untranslated": row[3] or 0,
+                "translated": row[4] or 0,   # machine output, not since edited
             }
 
     def _build_untranslated_clauses(
@@ -795,7 +836,7 @@ class EditorStore:
                     1 if warnings else 0,
                     " | ".join(warnings) if warnings else "",
                     entry_id,
-                ))
+                ))  # translation_source is set to 'auto' by the statement below
 
             if updates:
                 cur.executemany(
@@ -805,7 +846,8 @@ class EditorStore:
                         is_modified = 1,
                         line_count = ?,
                         has_warning = ?,
-                        warning_msg = ?
+                        warning_msg = ?,
+                        translation_source = 'auto'
                     WHERE id = ?
                     """,
                     updates,
