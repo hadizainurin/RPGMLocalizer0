@@ -62,18 +62,33 @@ def _extract_entries_from_backup(
                 orig_project = os.path.splitext(file_path)[0] + ".project"
                 bak_project = os.path.splitext(backup_path)[0] + ".project"
                 staged_project = os.path.splitext(staged)[0] + ".project"
-                if os.path.isfile(orig_project):
-                    shutil.copy2(orig_project, staged_project)
-                elif os.path.isfile(bak_project):
+                # The backup's own schema first: saving rewrites the live
+                # .project, so the current one may no longer describe this .dat.
+                if os.path.isfile(bak_project):
                     shutil.copy2(bak_project, staged_project)
+                elif os.path.isfile(orig_project):
+                    shutil.copy2(orig_project, staged_project)
 
+            log = logging.getLogger("EditorBackend")
             parser = get_parser(file_path, settings)
             if not parser:
+                log.warning(
+                    "No parser for backup of %s; its original text cannot be "
+                    "recovered and the saved translation will be shown as the source.",
+                    file_path,
+                )
                 return []
-            return list(parser.extract_text(staged))
+            entries = list(parser.extract_text(staged))
+            if not entries:
+                log.warning(
+                    "Backup of %s parsed to 0 entries (%s). Original text cannot be "
+                    "recovered for this file.", file_path, os.path.basename(backup_path),
+                )
+            return entries
     except Exception as exc:
-        logging.getLogger("EditorBackend").debug(
-            "Backup extraction failed for %s (%s): %s", file_path, backup_path, exc
+        logging.getLogger("EditorBackend").warning(
+            "Backup extraction failed for %s (%s): %s: %s",
+            file_path, os.path.basename(backup_path), type(exc).__name__, exc,
         )
         return []
 
@@ -281,6 +296,8 @@ class ScanWorker(QThread):
             # Attempt to resolve vanilla (pre-translation) text from the oldest backup
             # in each file's `.rpgm_backup/` folder — the same location the pipeline uses.
             backup_dict: dict[str, dict[str, str]] = {}
+            recovered_files = 0
+            unrecovered_files: list[str] = []
             backup_mgr = BackupManager()
             for fp in parsed_files:
                 backups = backup_mgr.get_backups_for_file(fp)
@@ -289,6 +306,17 @@ class ScanWorker(QThread):
                 orig_entries = _extract_entries_from_backup(fp, backups[0], self.settings)
                 if orig_entries:
                     backup_dict[fp] = {p: t for p, t, _ in orig_entries}
+                    recovered_files += 1
+                else:
+                    unrecovered_files.append(os.path.basename(fp))
+
+            if recovered_files or unrecovered_files:
+                self.logger.info(
+                    "Vanilla text recovered from backups for %d file(s); %d without a "
+                    "usable backup%s",
+                    recovered_files, len(unrecovered_files),
+                    (": " + ", ".join(unrecovered_files[:5])) if unrecovered_files else "",
+                )
 
             self.progress.emit(70, 100, "Indexing database...")
             total_loaded = self.store.load_entries(
@@ -1820,8 +1848,15 @@ class EditorBackend(QObject):
                     failures.append((os.path.basename(fp), "no parser for this file type"))
                     continue
 
-                # 1. Take atomic backup
+                # 1. Take atomic backup. For a WOLF .dat the companion .project
+                #    schema is rewritten too, so back that up alongside - without
+                #    it the vanilla .dat cannot be parsed on the next scan and the
+                #    original text is lost.
                 backup_mgr.create_backup(fp)
+                if fp.lower().endswith(".dat"):
+                    companion = os.path.splitext(fp)[0] + ".project"
+                    if os.path.isfile(companion):
+                        backup_mgr.create_backup(companion)
 
                 try:
                     # 2. Apply translation using parser

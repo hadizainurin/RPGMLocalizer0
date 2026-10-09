@@ -299,6 +299,8 @@ Item {
     function clearSelection() {
         root.selectedIds = []
         root.dragAnchorIndex = -1
+        root.dragSelecting = false
+        root.dragMoved = false
     }
 
     function toggleSelection(entryId) {
@@ -955,11 +957,11 @@ Item {
                         anchors.rightMargin: 12
                         spacing: 8
 
-                        Text { width: 24; text: "●"; font.pixelSize: 11; color: t ? t.textMuted : "#666677" }
-                        Text { width: 120; text: localeManager.strings.editor.col_file; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
-                        Text { width: 90;  text: localeManager.strings.editor.col_category; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
-                        Text { Layout.fillWidth: true; text: localeManager.strings.editor.col_original; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
-                        Text { Layout.fillWidth: true; text: localeManager.strings.editor.col_translation; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
+                        Text { Layout.preferredWidth: 24; text: "●"; font.pixelSize: 11; color: t ? t.textMuted : "#666677" }
+                        Text { Layout.preferredWidth: 120; text: localeManager.strings.editor.col_file; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
+                        Text { Layout.preferredWidth: 90; text: localeManager.strings.editor.col_category; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
+                        Text { Layout.fillWidth: true; Layout.preferredWidth: 1; text: localeManager.strings.editor.col_original; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
+                        Text { Layout.fillWidth: true; Layout.preferredWidth: 1; text: localeManager.strings.editor.col_translation; font.pixelSize: 11; font.bold: true; color: t ? t.textSecondary : "#bbbbd0"; elide: Text.ElideRight }
                     }
                 }
 
@@ -970,6 +972,11 @@ Item {
                     Layout.fillHeight: true
                     model: editorBackend.tableModel
                     clip: true
+
+                    //: Frozen while a row sweep is in progress, so dragging selects
+                    //: instead of flicking the list. Bound rather than assigned, so
+                    //: it restores itself the moment the sweep ends however it ends.
+                    interactive: !root.dragSelecting
 
                     ScrollBar.vertical: ScrollBar {
                         policy: ScrollBar.AsNeeded
@@ -1101,6 +1108,8 @@ Item {
 
                             // Status Dot
                             Rectangle {
+                                Layout.preferredWidth: 24
+                                Layout.alignment: Qt.AlignVCenter
                                 width: 8; height: 8; radius: 4
                                 color: {
                                     if (model.hasWarning) return "#f59e0b" // warning orange
@@ -1112,7 +1121,7 @@ Item {
 
                             // File Name
                             Text {
-                                width: 120
+                                Layout.preferredWidth: 120
                                 text: model.fileName
                                 font.pixelSize: 11
                                 color: t ? t.textSecondary : "#bbbbd0"
@@ -1121,7 +1130,9 @@ Item {
 
                             // Category Badge
                             Rectangle {
-                                width: 80; height: 20; radius: 4
+                                Layout.preferredWidth: 90
+                                Layout.alignment: Qt.AlignVCenter
+                                height: 20; radius: 4
                                 color: t ? t.bg4 : "#2a2a3a"
                                 Text {
                                     anchors.centerIn: parent
@@ -1135,6 +1146,7 @@ Item {
                             // Original Text Preview
                             Text {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 1
                                 text: model.originalText.replace(/\n/g, " ↵ ")
                                 font.pixelSize: 12
                                 color: t ? t.textPrimary : "#ffffff"
@@ -1144,6 +1156,7 @@ Item {
                             // Translated Text Preview
                             Text {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 1
                                 text: model.translatedText.replace(/\n/g, " ↵ ")
                                 font.pixelSize: 12
                                 color: model.isModified 
@@ -1160,6 +1173,13 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                            //: Without this the ListView's Flickable takes the mouse
+                            //: grab once the drag passes its threshold: the list
+                            //: scrolls under the cursor AND this MouseArea stops
+                            //: receiving events, so onReleased never fires and the
+                            //: sweep stayed armed after the button came up.
+                            preventStealing: true
 
                             //: Windows list-view semantics: plain click selects one
                             //: row, Ctrl+click toggles, Shift+click extends, and a
@@ -1198,7 +1218,9 @@ Item {
                             }
 
                             onPositionChanged: (mouse) => {
-                                if (!root.dragSelecting || root.dragAnchorIndex < 0)
+                                // pressed guards the case where the button is up but
+                                // a stray move still reaches this handler.
+                                if (!pressed || !root.dragSelecting || root.dragAnchorIndex < 0)
                                     return
                                 var pt = mapToItem(stringListView, mouse.x, mouse.y)
                                 var idx = root.rowIndexAt(pt.x, pt.y)
@@ -1235,6 +1257,15 @@ Item {
                                 // the multi-selection.
                                 root.clearSelection()
                                 root.selectRow(model.entryId)
+                            }
+
+                            //: The grab can still be lost (window deactivates, a
+                            //: dialog opens). Disarm here too, or the next mouse
+                            //: move would carry on extending a selection the user
+                            //: already finished.
+                            onCanceled: {
+                                root.dragSelecting = false
+                                root.dragMoved = false
                             }
                         }
                     }
