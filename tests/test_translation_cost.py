@@ -66,20 +66,39 @@ class SplitFallbackTests(unittest.TestCase):
 
 
 class OutputBudgetTests(unittest.TestCase):
+    @staticmethod
+    def _tr(**kwargs) -> LocalLLMTranslator:
+        kwargs.setdefault("model", "test")
+        return LocalLLMTranslator(**kwargs)
+
     def test_budget_scales_with_input(self) -> None:
-        small = OpenAICompatibleTranslator._output_token_budget(["abc"])
-        large = OpenAICompatibleTranslator._output_token_budget(["x" * 6000])
-        self.assertLess(small, large)
+        tr = self._tr()
+        self.assertLess(
+            tr._output_token_budget(["abc"]), tr._output_token_budget(["x" * 6000])
+        )
 
     def test_budget_is_clamped(self) -> None:
-        self.assertEqual(
-            OpenAICompatibleTranslator._output_token_budget([""]),
-            OpenAICompatibleTranslator.OUTPUT_BUDGET_MIN,
-        )
-        self.assertEqual(
-            OpenAICompatibleTranslator._output_token_budget(["x" * 500000]),
-            OpenAICompatibleTranslator.OUTPUT_BUDGET_MAX,
-        )
+        tr = self._tr()
+        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
+        self.assertEqual(tr._output_token_budget(["x" * 500000]), tr.OUTPUT_BUDGET_MAX)
+
+    def test_zero_means_auto(self) -> None:
+        tr = self._tr(max_tokens=0)
+        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
+
+    def test_explicit_override_wins_and_ignores_clamps(self) -> None:
+        tr = self._tr(max_tokens=12000)
+        self.assertEqual(tr._output_token_budget(["abc"]), 12000)
+        self.assertEqual(tr._output_token_budget(["x" * 500000]), 12000)
+
+    def test_override_flows_from_settings(self) -> None:
+        from src.core.translators.manager import create_translator
+        tr = create_translator({"engine": "local_llm", "local_llm_max_tokens": 1024})
+        self.assertEqual(tr._output_token_budget(["abc"]), 1024)
+
+    def test_base_class_still_defaults_to_auto(self) -> None:
+        tr = OpenAICompatibleTranslator(api_key="", model="m", base_url="http://x/v1")
+        self.assertEqual(tr._output_token_budget([""]), tr.OUTPUT_BUDGET_MIN)
 
 
 class LineBreakToleranceTests(unittest.TestCase):

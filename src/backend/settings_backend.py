@@ -59,6 +59,7 @@ class SettingsBackend(QObject):
             "gemini_safety_settings": "BLOCK_NONE",
             "local_llm_url": "http://localhost:8080/v1",
             "local_llm_model": "",
+            "local_llm_max_tokens": 0,  # 0 = size the cap from the input automatically
             "local_llm_prompt": "",
             "local_llm_prompt_mode": "append",
             "local_llm_debug_dump": False,
@@ -430,6 +431,14 @@ class SettingsBackend(QObject):
     @localLlmModel.setter
     def localLlmModel(self, val: str) -> None:
         self._set("local_llm_model", val)
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def localLlmMaxTokens(self) -> int:
+        return max(0, int(self._get("local_llm_max_tokens", 0)))
+
+    @localLlmMaxTokens.setter
+    def localLlmMaxTokens(self, val: int) -> None:
+        self._set("local_llm_max_tokens", max(0, int(val)))
 
     @pyqtProperty(str, notify=settingsChanged)
     def localLlmPrompt(self) -> str:

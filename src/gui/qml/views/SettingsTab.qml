@@ -8,6 +8,48 @@ Item {
     property var themeObj: null
     property var t: themeObj
 
+    //: Which provider's credentials the AI card is showing. Only one set of
+    //: fields is visible at a time; all of them stay bound to their own
+    //: settings, so switching tabs never discards anything.
+    property int providerTab: 0
+
+    function providerTabForEngine(engineName) {
+        switch (engineName) {
+            case "openai":
+            case "deepseek":        return 0
+            case "gemini":          return 1
+            case "hy_mt2":          return 2
+            case "local_llm":
+            case "ollama":
+            case "local":
+            case "lmstudio":        return 3
+            case "deepl":
+            case "libretranslate":  return 4
+            default:                return root.providerTab
+        }
+    }
+
+    // Open on whichever provider is actually in use, rather than always OpenAI.
+    Component.onCompleted: {
+        if (typeof settingsBackend !== "undefined") {
+            root.lastKnownEngine = settingsBackend.engine
+            root.providerTab = providerTabForEngine(settingsBackend.engine)
+        }
+    }
+    //: settingsChanged is a single shared signal for every setting, so follow the
+    //: engine only when the engine itself actually changed. Otherwise typing in a
+    //: field would snap the user back off the provider they were inspecting.
+    property string lastKnownEngine: ""
+    Connections {
+        target: typeof settingsBackend !== "undefined" ? settingsBackend : null
+        function onSettingsChanged() {
+            if (settingsBackend.engine !== root.lastKnownEngine) {
+                root.lastKnownEngine = settingsBackend.engine
+                root.providerTab = providerTabForEngine(settingsBackend.engine)
+            }
+        }
+    }
+
     // ---- Reusable Card ----
     component AppCard: Rectangle {
         color: t ? t.bg3 : "#22222f"
@@ -331,6 +373,29 @@ Item {
                             value: settingsBackend.concurrentRequests
                             onMoved: (val) => { settingsBackend.concurrentRequests = Math.round(val) }
                         }
+                        StyledSlider {
+                            label: localeManager.strings.settings.max_tokens_label
+                            from: 0; to: 8192; step: 256
+                            value: settingsBackend.localLlmMaxTokens
+                            onMoved: (val) => { settingsBackend.localLlmMaxTokens = Math.round(val) }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: settingsBackend.localLlmMaxTokens === 0
+                                  ? localeManager.strings.settings.max_tokens_auto_hint
+                                  : localeManager.strings.settings.max_tokens_manual_hint
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: localeManager.strings.settings.throughput_hint
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
+
                         ToggleRow {
                             label: localeManager.strings.settings.multi_endpoint_label
                             desc: localeManager.strings.settings.multi_endpoint_desc
@@ -361,196 +426,232 @@ Item {
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
 
-                        // OpenAI / DeepSeek
-                        Text { text: localeManager.strings.settings.section_openai; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: t ? t.spaceMD : 12
-                            InputField {
-                                label: localeManager.strings.settings.api_key_label
-                                text: settingsBackend.openaiApiKey
-                                placeholder: "sk-..."
-                                isPassword: true
-                                onEditingFinished: (newText) => { settingsBackend.openaiApiKey = newText }
-                            }
-                            InputField {
-                                label: localeManager.strings.settings.model_name_label
-                                text: settingsBackend.openaiModel
-                                placeholder: "gpt-4o-mini"
-                                onEditingFinished: (newText) => { settingsBackend.openaiModel = newText }
-                            }
-                        }
-                        InputField {
-                            label: localeManager.strings.settings.openai_base_url_label
-                            text: settingsBackend.openaiBaseUrl
-                            placeholder: "https://api.openai.com/v1"
-                            onEditingFinished: (newText) => { settingsBackend.openaiBaseUrl = newText }
-                        }
-
-                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
-
-                        // Google Gemini
-                        Text { text: localeManager.strings.settings.section_gemini; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: t ? t.spaceMD : 12
-                            InputField {
-                                label: localeManager.strings.settings.api_key_label
-                                text: settingsBackend.geminiApiKey
-                                placeholder: "AIzaSy..."
-                                isPassword: true
-                                onEditingFinished: (newText) => { settingsBackend.geminiApiKey = newText }
-                            }
-                            InputField {
-                                label: localeManager.strings.settings.model_name_label
-                                text: settingsBackend.geminiModel
-                                placeholder: "gemini-2.0-flash"
-                                onEditingFinished: (newText) => { settingsBackend.geminiModel = newText }
-                            }
-                        }
-
-                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
-
-                        // Local LLM
-                        Text { text: "Hy-MT2 (Local)"; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
-                        Component.onCompleted: settingsBackend.refreshHyMt2Models()
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: t ? t.spaceMD : 12
-                            InputField {
-                                label: localeManager.strings.settings.base_url_label
-                                text: settingsBackend.hyMt2Url
-                                placeholder: "http://127.0.0.1:1234/v1"
-                                onEditingFinished: (newText) => { settingsBackend.hyMt2Url = newText }
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 10
-                            StyledCombo {
-                                Layout.fillWidth: true
-                                model: [localeManager.strings.settings.model_name_label].concat(settingsBackend.hyMt2Models)
-                                currentIndex: settingsBackend.hyMt2Models.indexOf(settingsBackend.hyMt2Model) + 1
-                                onActivated: (index) => { settingsBackend.hyMt2Model = index > 0 ? settingsBackend.hyMt2Models[index - 1] : "" }
-                            }
-                            Button { text: "↻"; onClicked: settingsBackend.refreshHyMt2Models() }
-                            Text { text: settingsBackend.hyMt2ModelStatus; color: t ? t.textSecondary : "#9090b8"; font.pixelSize: 11 }
-                        }
-                        StyledSlider {
-                            label: "Hy-MT2 workers"; from: 1; to: 8; step: 1
-                            value: settingsBackend.hyMt2Workers
-                            onMoved: (val) => { settingsBackend.hyMt2Workers = Math.round(val) }
-                        }
-                        InputField {
-                            label: "Translation style"
-                            text: settingsBackend.hyMt2Style
-                            placeholder: "e.g. natural, consistent, high-fantasy RPG register"
-                            onEditingFinished: (newText) => { settingsBackend.hyMt2Style = newText }
-                        }
-
-                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
-
-                        // Local LLM
-                        Text { text: localeManager.strings.settings.section_local_llm; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: t ? t.spaceMD : 12
-                            InputField {
-                                label: localeManager.strings.settings.base_url_label
-                                text: settingsBackend.localLlmUrl
-                                placeholder: "http://localhost:8080/v1"
-                                onEditingFinished: (newText) => { settingsBackend.localLlmUrl = newText }
-                            }
-                            InputField {
-                                label: localeManager.strings.settings.model_name_label
-                                text: settingsBackend.localLlmModel
-                                placeholder: "(leave empty for llama.cpp)"
-                                onEditingFinished: (newText) => { settingsBackend.localLlmModel = newText }
-                            }
-                        }
-
                         Text {
-                            Layout.fillWidth: true
-                            text: localeManager.strings.settings.local_llm_model_hint
-                            wrapMode: Text.Wrap
-                            font.pixelSize: 11
-                            color: t ? t.textMuted : "#55556a"
+                            text: localeManager.strings.settings.provider_select_label
+                            font.pixelSize: 11; font.bold: true
+                            color: t ? t.textSecondary : "#9090b8"
                         }
-
-                        RowLayout {
+                        StyledCombo {
+                            Layout.fillWidth: true
+                            model: [
+                                localeManager.strings.settings.section_openai,
+                                localeManager.strings.settings.section_gemini,
+                                localeManager.strings.settings.section_hy_mt2,
+                                localeManager.strings.settings.section_local_llm,
+                                localeManager.strings.settings.section_deepl + " / " + localeManager.strings.settings.section_libretranslate
+                            ]
+                            currentIndex: root.providerTab
+                            onActivated: (index) => { root.providerTab = index }
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
+                        ColumnLayout {
+                            id: provOpenAI
                             Layout.fillWidth: true
                             spacing: t ? t.spaceMD : 12
-
-                            Text {
-                                text: localeManager.strings.settings.local_llm_prompt_mode_label
-                                font.pixelSize: 11
-                                font.bold: true
-                                color: t ? t.textSecondary : "#9090b8"
-                            }
-                            StyledCombo {
-                                id: promptModeCombo
-                                Layout.preferredWidth: 220
-                                model: [
-                                    localeManager.strings.settings.local_llm_prompt_mode_append,
-                                    localeManager.strings.settings.local_llm_prompt_mode_override
-                                ]
-                                currentIndex: settingsBackend.localLlmPromptMode === "override" ? 1 : 0
-                                onActivated: (index) => {
-                                    settingsBackend.localLlmPromptMode = index === 1 ? "override" : "append"
-                                }
-                            }
-                            CheckBox {
-                                text: localeManager.strings.settings.local_llm_debug_dump_label
-                                checked: settingsBackend.localLlmDebugDump
-                                font.pixelSize: t ? t.fontSizeSM : 12
-                                onToggled: { settingsBackend.localLlmDebugDump = checked }
-                            }
-                            Item { Layout.fillWidth: true }
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            visible: settingsBackend.localLlmPromptMode === "override"
-                            text: localeManager.strings.settings.local_llm_prompt_override_warning
-                            wrapMode: Text.Wrap
-                            font.pixelSize: 11
-                            color: t ? t.warning : "#e0b050"
-                        }
-
-                        PromptField {
-                            label: localeManager.strings.settings.local_llm_prompt_label
-                            text: settingsBackend.localLlmPrompt
-                            placeholder: localeManager.strings.settings.local_llm_prompt_placeholder
-                            onEditingFinished: (newText) => { settingsBackend.localLlmPrompt = newText }
-                        }
-
-                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
-
-                        // DeepL & LibreTranslate
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: t ? t.spaceLG : 16
-                            ColumnLayout {
+                            visible: root.providerTab === 0
+                            // OpenAI / DeepSeek
+                            Text { text: localeManager.strings.settings.section_openai; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                            RowLayout {
                                 Layout.fillWidth: true
-                                spacing: t ? t.spaceSM : 8
-                                Text { text: localeManager.strings.settings.section_deepl; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                                spacing: t ? t.spaceMD : 12
                                 InputField {
                                     label: localeManager.strings.settings.api_key_label
-                                    text: settingsBackend.deeplApiKey
-                                    placeholder: "xxxxxxxx-xxxx-..."
+                                    text: settingsBackend.openaiApiKey
+                                    placeholder: "sk-..."
                                     isPassword: true
-                                    onEditingFinished: (newText) => { settingsBackend.deeplApiKey = newText }
+                                    onEditingFinished: (newText) => { settingsBackend.openaiApiKey = newText }
+                                }
+                                InputField {
+                                    label: localeManager.strings.settings.model_name_label
+                                    text: settingsBackend.openaiModel
+                                    placeholder: "gpt-4o-mini"
+                                    onEditingFinished: (newText) => { settingsBackend.openaiModel = newText }
                                 }
                             }
-                            ColumnLayout {
+                            InputField {
+                                label: localeManager.strings.settings.openai_base_url_label
+                                text: settingsBackend.openaiBaseUrl
+                                placeholder: "https://api.openai.com/v1"
+                                onEditingFinished: (newText) => { settingsBackend.openaiBaseUrl = newText }
+                            }
+                        }
+                        ColumnLayout {
+                            id: provGemini
+                            Layout.fillWidth: true
+                            spacing: t ? t.spaceMD : 12
+                            visible: root.providerTab === 1
+                            // Google Gemini
+                            Text { text: localeManager.strings.settings.section_gemini; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                            RowLayout {
                                 Layout.fillWidth: true
-                                spacing: t ? t.spaceSM : 8
-                                Text { text: localeManager.strings.settings.section_libretranslate; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                                spacing: t ? t.spaceMD : 12
                                 InputField {
-                                    label: localeManager.strings.settings.server_url_label
-                                    text: settingsBackend.libretranslateUrl
-                                    placeholder: "http://localhost:5000"
-                                    onEditingFinished: (newText) => { settingsBackend.libretranslateUrl = newText }
+                                    label: localeManager.strings.settings.api_key_label
+                                    text: settingsBackend.geminiApiKey
+                                    placeholder: "AIzaSy..."
+                                    isPassword: true
+                                    onEditingFinished: (newText) => { settingsBackend.geminiApiKey = newText }
+                                }
+                                InputField {
+                                    label: localeManager.strings.settings.model_name_label
+                                    text: settingsBackend.geminiModel
+                                    placeholder: "gemini-2.0-flash"
+                                    onEditingFinished: (newText) => { settingsBackend.geminiModel = newText }
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            id: provHyMt2
+                            Layout.fillWidth: true
+                            spacing: t ? t.spaceMD : 12
+                            visible: root.providerTab === 2
+                            // Local LLM
+                            Text { text: "Hy-MT2 (Local)"; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                            Component.onCompleted: settingsBackend.refreshHyMt2Models()
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: t ? t.spaceMD : 12
+                                InputField {
+                                    label: localeManager.strings.settings.base_url_label
+                                    text: settingsBackend.hyMt2Url
+                                    placeholder: "http://127.0.0.1:1234/v1"
+                                    onEditingFinished: (newText) => { settingsBackend.hyMt2Url = newText }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                StyledCombo {
+                                    Layout.fillWidth: true
+                                    model: [localeManager.strings.settings.model_name_label].concat(settingsBackend.hyMt2Models)
+                                    currentIndex: settingsBackend.hyMt2Models.indexOf(settingsBackend.hyMt2Model) + 1
+                                    onActivated: (index) => { settingsBackend.hyMt2Model = index > 0 ? settingsBackend.hyMt2Models[index - 1] : "" }
+                                }
+                                Button { text: "↻"; onClicked: settingsBackend.refreshHyMt2Models() }
+                                Text { text: settingsBackend.hyMt2ModelStatus; color: t ? t.textSecondary : "#9090b8"; font.pixelSize: 11 }
+                            }
+                            StyledSlider {
+                                label: "Hy-MT2 workers"; from: 1; to: 8; step: 1
+                                value: settingsBackend.hyMt2Workers
+                                onMoved: (val) => { settingsBackend.hyMt2Workers = Math.round(val) }
+                            }
+                            InputField {
+                                label: "Translation style"
+                                text: settingsBackend.hyMt2Style
+                                placeholder: "e.g. natural, consistent, high-fantasy RPG register"
+                                onEditingFinished: (newText) => { settingsBackend.hyMt2Style = newText }
+                            }
+                        }
+                        ColumnLayout {
+                            id: provLocal
+                            Layout.fillWidth: true
+                            spacing: t ? t.spaceMD : 12
+                            visible: root.providerTab === 3
+                            // Local LLM
+                            Text { text: localeManager.strings.settings.section_local_llm; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: t ? t.spaceMD : 12
+                                InputField {
+                                    label: localeManager.strings.settings.base_url_label
+                                    text: settingsBackend.localLlmUrl
+                                    placeholder: "http://localhost:8080/v1"
+                                    onEditingFinished: (newText) => { settingsBackend.localLlmUrl = newText }
+                                }
+                                InputField {
+                                    label: localeManager.strings.settings.model_name_label
+                                    text: settingsBackend.localLlmModel
+                                    placeholder: "(leave empty for llama.cpp)"
+                                    onEditingFinished: (newText) => { settingsBackend.localLlmModel = newText }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: localeManager.strings.settings.local_llm_model_hint
+                                wrapMode: Text.Wrap
+                                font.pixelSize: 11
+                                color: t ? t.textMuted : "#55556a"
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: t ? t.spaceMD : 12
+
+                                Text {
+                                    text: localeManager.strings.settings.local_llm_prompt_mode_label
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    color: t ? t.textSecondary : "#9090b8"
+                                }
+                                StyledCombo {
+                                    id: promptModeCombo
+                                    Layout.preferredWidth: 220
+                                    model: [
+                                        localeManager.strings.settings.local_llm_prompt_mode_append,
+                                        localeManager.strings.settings.local_llm_prompt_mode_override
+                                    ]
+                                    currentIndex: settingsBackend.localLlmPromptMode === "override" ? 1 : 0
+                                    onActivated: (index) => {
+                                        settingsBackend.localLlmPromptMode = index === 1 ? "override" : "append"
+                                    }
+                                }
+                                CheckBox {
+                                    text: localeManager.strings.settings.local_llm_debug_dump_label
+                                    checked: settingsBackend.localLlmDebugDump
+                                    font.pixelSize: t ? t.fontSizeSM : 12
+                                    onToggled: { settingsBackend.localLlmDebugDump = checked }
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                visible: settingsBackend.localLlmPromptMode === "override"
+                                text: localeManager.strings.settings.local_llm_prompt_override_warning
+                                wrapMode: Text.Wrap
+                                font.pixelSize: 11
+                                color: t ? t.warning : "#e0b050"
+                            }
+
+                            PromptField {
+                                label: localeManager.strings.settings.local_llm_prompt_label
+                                text: settingsBackend.localLlmPrompt
+                                placeholder: localeManager.strings.settings.local_llm_prompt_placeholder
+                                onEditingFinished: (newText) => { settingsBackend.localLlmPrompt = newText }
+                            }
+                        }
+                        ColumnLayout {
+                            id: provDeepL
+                            Layout.fillWidth: true
+                            spacing: t ? t.spaceMD : 12
+                            visible: root.providerTab === 4
+                            // DeepL & LibreTranslate
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: t ? t.spaceLG : 16
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: t ? t.spaceSM : 8
+                                    Text { text: localeManager.strings.settings.section_deepl; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                                    InputField {
+                                        label: localeManager.strings.settings.api_key_label
+                                        text: settingsBackend.deeplApiKey
+                                        placeholder: "xxxxxxxx-xxxx-..."
+                                        isPassword: true
+                                        onEditingFinished: (newText) => { settingsBackend.deeplApiKey = newText }
+                                    }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: t ? t.spaceSM : 8
+                                    Text { text: localeManager.strings.settings.section_libretranslate; font.pixelSize: t ? t.fontSizeSM : 12; font.bold: true; color: t ? t.accentLight : "#a89bf9" }
+                                    InputField {
+                                        label: localeManager.strings.settings.server_url_label
+                                        text: settingsBackend.libretranslateUrl
+                                        placeholder: "http://localhost:5000"
+                                        onEditingFinished: (newText) => { settingsBackend.libretranslateUrl = newText }
+                                    }
                                 }
                             }
                         }

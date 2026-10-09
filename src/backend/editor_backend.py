@@ -594,6 +594,119 @@ class AutoTranslateWorker(QThread):
             self.finished.emit(translated_count, f"Done! {translated_count} strings translated successfully.")
 
 
+#: Engines offered in the editor's right-click "Translate with" menu. Order is
+#: the order shown. The `id` must match a case in translators.manager.create_translator.
+#: DeepL needs no separate free entry: DeepLTranslator picks api-free.deepl.com
+#: automatically when the key carries the ":fx" suffix that free keys have.
+SINGLE_TRANSLATE_ENGINES: list[dict[str, str]] = [
+    {"id": "", "name": "Current engine", "needs_key": ""},
+    {"id": "local_llm", "name": "\U0001F999 Local LLM", "needs_key": ""},
+    {"id": "hy_mt2", "name": "\U0001F238 Hy-MT2 (Local)", "needs_key": ""},
+    {"id": "openai", "name": "\U0001F916 OpenAI", "needs_key": "openai_api_key"},
+    {"id": "deepseek", "name": "\U0001F30A DeepSeek", "needs_key": "deepseek_api_key"},
+    {"id": "gemini", "name": "\u2728 Google Gemini", "needs_key": "gemini_api_key"},
+    {"id": "deepl", "name": "\U0001F3AF DeepL (Free or Pro)", "needs_key": "deepl_api_key"},
+    {"id": "libretranslate", "name": "\U0001F513 LibreTranslate", "needs_key": ""},
+    {"id": "google", "name": "\U0001F310 Google Translate (free)", "needs_key": ""},
+]
+
+
+class SingleTranslateWorker(QThread):
+    """Translate one entry with a chosen engine, off the UI thread.
+
+    Mirrors AutoTranslateWorker's protect -> clean -> translate -> reassemble
+    chain so a one-off translation is guarded exactly like a bulk one; the only
+    difference is that the engine can be overridden per call.
+    """
+
+    finished = pyqtSignal(int, bool, str)  # (entry_id, success, message)
+
+    def __init__(
+        self,
+        store: "EditorStore",
+        settings: dict,
+        entry_id: int,
+        engine: str = "",
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.store = store
+        self.settings = dict(settings)
+        if engine:
+            self.settings["engine"] = engine
+        self.entry_id = entry_id
+        self.engine = engine or str(settings.get("engine", "google"))
+        self.result_text: str = ""
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def run(self) -> None:
+        import asyncio
+        from src.core.translator import create_translator
+        from src.core.translators.base import TranslationRequest
+        from src.core.text_segmenter import clean_text, reassemble
+        from src.core.glossary import Glossary
+
+        row = self.store.get_entry(self.entry_id)
+        if not row:
+            self.finished.emit(self.entry_id, False, "Entry not found.")
+            return
+
+        original = row.get("original_text", "")
+        if not original.strip():
+            self.finished.emit(self.entry_id, False, "Nothing to translate.")
+            return
+
+        source_lang = self.settings.get("source_lang", "auto")
+        target_lang = self.settings.get("target_lang", "en")
+
+        glossary_path = self.settings.get("glossary_path", "")
+        glossary = (
+            Glossary(glossary_path)
+            if self.settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path)
+            else None
+        )
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        translator = None
+        try:
+            translator = create_translator(self.settings)
+            protected, term_map = glossary.protect_terms(original) if glossary else (original, {})
+            clean, segs = clean_text(protected)
+            if not clean.strip():
+                self.finished.emit(self.entry_id, False, "Nothing translatable in this entry.")
+                return
+
+            results = loop.run_until_complete(
+                translator.translate_batch([
+                    TranslationRequest(
+                        text=clean, source_lang=source_lang, target_lang=target_lang
+                    )
+                ])
+            )
+            if not results or not results[0].success or not results[0].translated_text:
+                err = (results[0].error if results else None) or "no text returned"
+                self.finished.emit(self.entry_id, False, f"{self.engine}: {err}")
+                return
+
+            translated = results[0].translated_text
+            restored = reassemble(translated, segs) if segs else translated
+            if glossary:
+                restored = glossary.restore_terms(restored, term_map)
+            self.result_text = restored
+            self.finished.emit(self.entry_id, True, self.engine)
+        except Exception as exc:
+            self.logger.warning("Single translate failed (%s): %s", self.engine, exc)
+            self.finished.emit(self.entry_id, False, f"{self.engine}: {exc}")
+        finally:
+            try:
+                if translator is not None:
+                    loop.run_until_complete(translator.close())
+            except Exception:
+                pass
+            loop.close()
+
+
 class EditorBackend(QObject):
     """Main controller for the in-app translation editor tab."""
 
@@ -610,6 +723,8 @@ class EditorBackend(QObject):
     autoTranslateProgressChanged = pyqtSignal()
     autoTranslateFinished = pyqtSignal(bool, str)   # (success, message)
     scanFinished = pyqtSignal(bool, str, int)       # (success, message, count)
+    singleTranslateFinished = pyqtSignal(int, bool, str)  # (entryId, success, message)
+    singleTranslateRunningChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -623,6 +738,7 @@ class EditorBackend(QObject):
         self.settings_backend = settings_backend
 
         self._table_model = EditorTableModel(self)
+        self._single_worker: SingleTranslateWorker | None = None
         self._store: EditorStore | None = None
         self._scan_worker: ScanWorker | None = None
         self._auto_translate_worker: AutoTranslateWorker | None = None
@@ -1094,6 +1210,64 @@ class EditorBackend(QObject):
             self._set_selected_entry_dict(updated)
             self._table_model.update_row_by_id(self._selected_entry_id, updated)
             self._refresh_stats()
+
+    @pyqtProperty("QVariantList", constant=True)
+    def singleTranslateEngines(self) -> list:
+        """Engine choices for the editor's right-click menu.
+
+        An engine whose credential is missing is still listed but marked
+        unavailable, so the menu explains itself rather than silently failing.
+        """
+        out = []
+        for spec in SINGLE_TRANSLATE_ENGINES:
+            key_name = spec.get("needs_key") or ""
+            available = True
+            if key_name:
+                try:
+                    available = bool(str(self.settings_backend.get_dict().get(key_name, "")).strip())
+                except Exception:
+                    available = False
+            out.append({
+                "id": spec["id"],
+                "name": spec["name"],
+                "available": available,
+            })
+        return out
+
+    @pyqtProperty(bool, notify=singleTranslateRunningChanged)
+    def singleTranslateRunning(self) -> bool:
+        return self._single_worker is not None and self._single_worker.isRunning()
+
+    @pyqtSlot(int, str)
+    def translateEntryWith(self, entry_id: int, engine: str = "") -> None:
+        """Translate one entry using a specific engine, leaving settings untouched."""
+        if not self._store or entry_id <= 0:
+            return
+        if self._single_worker is not None and self._single_worker.isRunning():
+            self.singleTranslateFinished.emit(
+                entry_id, False, "Another single translation is still running."
+            )
+            return
+
+        settings = self.settings_backend.get_dict()
+        self._single_worker = SingleTranslateWorker(self._store, settings, entry_id, engine, self)
+        self._single_worker.finished.connect(self._on_single_translate_finished)
+        self._single_worker.start()
+        self.singleTranslateRunningChanged.emit()
+
+    def _on_single_translate_finished(self, entry_id: int, ok: bool, message: str) -> None:
+        worker = self._single_worker
+        if ok and worker is not None and worker.result_text:
+            updated = self._store.update_entry(entry_id, worker.result_text)
+            if updated:
+                self._table_model.update_row_by_id(entry_id, updated)
+                if entry_id == self._selected_entry_id:
+                    self._set_selected_entry_dict(updated)
+                self._refresh_stats()
+                self.hasUnsavedChangesChanged.emit()
+        self._single_worker = None
+        self.singleTranslateRunningChanged.emit()
+        self.singleTranslateFinished.emit(entry_id, ok, message)
 
     @pyqtSlot()
     def revertSelectedEntry(self) -> None:

@@ -166,6 +166,7 @@ def _build_local_llm_translator(
         system_prompt=str(settings.get("local_llm_prompt", "") or ""),
         prompt_mode=str(settings.get("local_llm_prompt_mode", "append") or "append"),
         debug_dump=bool(settings.get("local_llm_debug_dump", False)),
+        max_tokens=int(settings.get("local_llm_max_tokens", 0) or 0),
     )
 
 

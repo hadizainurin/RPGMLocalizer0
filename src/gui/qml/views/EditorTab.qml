@@ -29,6 +29,83 @@ Item {
         return animDotCount === 1 ? "." : (animDotCount === 2 ? ".." : (animDotCount === 3 ? "..." : ""))
     }
 
+    //: Entry the "Translate with" menu will act on. Set on right-click, because
+    //: the menu is shared by every row rather than instantiated per delegate.
+    property int contextEntryId: -1
+
+    Menu {
+        id: translateWithMenu
+        Material.theme: Material.Dark
+
+        MenuItem {
+            enabled: false
+            height: 30
+            contentItem: Text {
+                text: localeManager.strings.editor.translate_with_title
+                font.pixelSize: 11
+                font.bold: true
+                color: t ? t.textSecondary : "#9090b8"
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+        MenuSeparator {}
+
+        Repeater {
+            model: editorBackend.singleTranslateEngines
+            MenuItem {
+                text: modelData.available
+                      ? modelData.name
+                      : modelData.name + "  " + localeManager.strings.editor.translate_with_no_key
+                enabled: modelData.available && !editorBackend.singleTranslateRunning
+                onTriggered: {
+                    if (root.contextEntryId > 0) {
+                        root.selectRow(root.contextEntryId)
+                        editorBackend.translateEntryWith(root.contextEntryId, modelData.id)
+                    }
+                }
+            }
+        }
+    }
+
+    Connections {
+        target: editorBackend
+        function onSingleTranslateFinished(entryId, ok, message) {
+            root.singleTranslateNotice = ok
+                ? localeManager.strings.editor.translate_with_done + " " + message
+                : localeManager.strings.editor.translate_with_failed + " " + message
+            singleTranslateNoticeTimer.restart()
+        }
+    }
+    property string singleTranslateNotice: ""
+    Timer {
+        id: singleTranslateNoticeTimer
+        interval: 4000
+        onTriggered: root.singleTranslateNotice = ""
+    }
+
+    // Floating result banner for right-click translations. Kept above the
+    // editor content so it reads the same whichever row was acted on.
+    Rectangle {
+        z: 100
+        visible: root.singleTranslateNotice !== ""
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 24
+        implicitWidth: noticeText.implicitWidth + 28
+        implicitHeight: 34
+        radius: 8
+        color: t ? t.bg4 : "#2a2a3a"
+        border.color: t ? t.accent : "#7c6cf8"
+        border.width: 1
+        Text {
+            id: noticeText
+            anchors.centerIn: parent
+            text: root.singleTranslateNotice
+            font.pixelSize: 12
+            color: t ? t.textPrimary : "#f0f0ff"
+        }
+    }
+
     function selectRow(entryId) {
         if (editorBackend.selectedEntry && editorBackend.selectedEntry.id && typeof transTextArea !== "undefined" && transTextArea.text !== (editorBackend.selectedEntry.translated_text || "")) {
             editorBackend.updateSelectedTranslation(transTextArea.text)
@@ -792,7 +869,15 @@ Item {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.selectRow(model.entryId)
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: (mouse) => {
+                                if (mouse.button === Qt.RightButton) {
+                                    root.contextEntryId = model.entryId
+                                    translateWithMenu.popup()
+                                } else {
+                                    root.selectRow(model.entryId)
+                                }
+                            }
                         }
                     }
                 }

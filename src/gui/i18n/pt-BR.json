@@ -61,7 +61,13 @@
     "local_llm_prompt_mode_override": "Override (full control)",
     "local_llm_prompt_override_warning": "Override mode replaces the built-in output contract. Your prompt MUST ask for a JSON array, or {\"t\": [...]}, with exactly the same number of items in the same order as the input - otherwise the batch silently falls back to untranslated text.",
     "local_llm_debug_dump_label": "Dump payloads to logs",
-    "local_llm_model_hint": "Leave Model Name empty for llama.cpp - it serves whatever model it was started with. Name it only for Ollama or LM Studio."
+    "local_llm_model_hint": "Leave Model Name empty for llama.cpp - it serves whatever model it was started with. Name it only for Ollama or LM Studio.",
+    "provider_select_label": "Provider",
+    "section_hy_mt2": "🈸 Hy-MT2 (Local)",
+    "max_tokens_label": "Max Output Tokens",
+    "max_tokens_auto_hint": "0 = automatic: the cap is sized from each batch's input length. Recommended.",
+    "max_tokens_manual_hint": "Fixed cap. Too low truncates long merged blocks, which forces a retry and costs more than it saves.",
+    "throughput_hint": "Batch Size and Concurrent Requests apply to the Google and Hy-MT2 engines. For a local LLM, throughput is governed by your server - use llama.cpp's --parallel, -ngl and quantization settings."
   },
   "about": {
     "tagline": "Motor de localização autônomo",
@@ -295,6 +301,10 @@
     "apply_button": "✓ Aplicar (Ctrl+Enter)",
     "status_encrypted_wolf": "Este jogo WOLF RPG contém arquivos criptografados (.wolf). Extraia os dados para a pasta 'Data' antes de traduzir.<br><br>👉 <a href=\"https://github.com/Sinflower/UberWolf/releases\" style=\"color: #9d8dfc; text-decoration: underline;\">Baixar UberWolf aqui (GitHub)</a>",
     "status_no_translatable_files": "Nenhum arquivo traduzível encontrado na pasta de dados do projeto.",
-    "status_wolf_archives_isolated": "Os arquivos .wolf em conflito foram movidos para 'Data/_wolf_original/' para que o motor carregue os arquivos traduzidos."
+    "status_wolf_archives_isolated": "Os arquivos .wolf em conflito foram movidos para 'Data/_wolf_original/' para que o motor carregue os arquivos traduzidos.",
+    "translate_with_title": "Translate this entry with...",
+    "translate_with_no_key": "(no API key set)",
+    "translate_with_done": "Translated with",
+    "translate_with_failed": "Translation failed -"
   }
 }

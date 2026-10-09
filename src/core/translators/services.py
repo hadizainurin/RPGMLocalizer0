@@ -323,9 +323,14 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
     OUTPUT_BUDGET_MIN = 256
     OUTPUT_BUDGET_MAX = 4096
 
-    @classmethod
-    def _output_token_budget(cls, clean_texts: Sequence[str]) -> int:
+    #: Explicit user cap; 0 keeps the automatic sizing below.
+    max_tokens_override: int = 0
+
+    def _output_token_budget(self, clean_texts: Sequence[str]) -> int:
         """Size max_tokens from the input so a runaway response is cut short."""
+        if getattr(self, "max_tokens_override", 0) > 0:
+            return int(self.max_tokens_override)
+        cls = type(self)
         total_chars = sum(len(text or "") for text in clean_texts)
         # ~2 chars per token is pessimistic enough for CJK sources.
         estimated = int((total_chars / 2) * cls.OUTPUT_BUDGET_RATIO) + 64
@@ -447,9 +452,11 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         system_prompt: str = "",
         prompt_mode: str = "append",
         debug_dump: bool = False,
+        max_tokens: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(api_key=api_key, model=model, base_url=base_url, **kwargs)
+        self.max_tokens_override = max(0, int(max_tokens or 0))
         self.system_prompt = (system_prompt or "").strip()
         self.prompt_mode = (prompt_mode or "append").strip().lower()
         if self.prompt_mode not in ("append", "override"):
@@ -909,6 +916,16 @@ class DeepLTranslator(BaseTranslator):
         self.formality = formality
         self._engine = TranslationEngine.DEEPL
 
+    def _resolve_base_url(self) -> str:
+        """Pick the free or Pro endpoint from the key itself.
+
+        DeepL free keys carry a ":fx" suffix, so one menu entry covers both
+        tiers and the user never has to choose.
+        """
+        if ":fx" in self.api_key or self.api_key.startswith("free:"):
+            return self.base_url_free
+        return self.base_url_paid
+
     def _map_lang(self, lang: str, is_target: bool = True) -> str:
         if not lang:
             return "EN-US" if is_target else "EN"
@@ -1037,11 +1054,7 @@ class DeepLTranslator(BaseTranslator):
         if formality_val and target_lang.lower()[:2] in self.FORMALITY_LANGUAGES:
             data["formality"] = formality_val
 
-        base_url = (
-            self.base_url_free
-            if ":fx" in self.api_key or self.api_key.startswith("free:")
-            else self.base_url_paid
-        )
+        base_url = self._resolve_base_url()
 
         last_error = ""
         is_quota = False

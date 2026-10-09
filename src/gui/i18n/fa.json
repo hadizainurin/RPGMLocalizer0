@@ -61,7 +61,13 @@
     "local_llm_prompt_mode_override": "Override (full control)",
     "local_llm_prompt_override_warning": "Override mode replaces the built-in output contract. Your prompt MUST ask for a JSON array, or {\"t\": [...]}, with exactly the same number of items in the same order as the input - otherwise the batch silently falls back to untranslated text.",
     "local_llm_debug_dump_label": "Dump payloads to logs",
-    "local_llm_model_hint": "Leave Model Name empty for llama.cpp - it serves whatever model it was started with. Name it only for Ollama or LM Studio."
+    "local_llm_model_hint": "Leave Model Name empty for llama.cpp - it serves whatever model it was started with. Name it only for Ollama or LM Studio.",
+    "provider_select_label": "Provider",
+    "section_hy_mt2": "🈸 Hy-MT2 (Local)",
+    "max_tokens_label": "Max Output Tokens",
+    "max_tokens_auto_hint": "0 = automatic: the cap is sized from each batch's input length. Recommended.",
+    "max_tokens_manual_hint": "Fixed cap. Too low truncates long merged blocks, which forces a retry and costs more than it saves.",
+    "throughput_hint": "Batch Size and Concurrent Requests apply to the Google and Hy-MT2 engines. For a local LLM, throughput is governed by your server - use llama.cpp's --parallel, -ngl and quantization settings."
   },
   "about": {
     "tagline": "موتور بومی‌سازی خودکار",
@@ -295,6 +301,10 @@
     "apply_button": "✓ اعمال (Ctrl+Enter)",
     "status_encrypted_wolf": "این بازی WOLF RPG شامل آرشیوهای رمزگذاری شده (.wolf) است. لطفاً ابتدا داده‌ها را در پوشه 'Data' استخراج کنید.<br><br>👉 <a href=\"https://github.com/Sinflower/UberWolf/releases\" style=\"color: #9d8dfc; text-decoration: underline;\">دانلود UberWolf از اینجا (GitHub)</a>",
     "status_no_translatable_files": "هیچ فایل قابل ترجمه‌ای در پوشه داده‌های پروژه یافت نشد.",
-    "status_wolf_archives_isolated": "آرشیوهای .wolf ناسازگار به 'Data/_wolf_original/' منتقل شدند تا موتور بازی فایل‌های ترجمه شده را بارگذاری کند."
+    "status_wolf_archives_isolated": "آرشیوهای .wolf ناسازگار به 'Data/_wolf_original/' منتقل شدند تا موتور بازی فایل‌های ترجمه شده را بارگذاری کند.",
+    "translate_with_title": "Translate this entry with...",
+    "translate_with_no_key": "(no API key set)",
+    "translate_with_done": "Translated with",
+    "translate_with_failed": "Translation failed -"
   }
 }
