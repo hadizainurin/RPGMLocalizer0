@@ -134,12 +134,15 @@ def _build_local_llm_translator(
     settings: Dict[str, Any], concurrency: int, batch_size: int, timeout: int
 ) -> LocalLLMTranslator:
     api_key = str(settings.get("local_llm_api_key", "") or settings.get("api_key", ""))
-    model = str(settings.get("local_llm_model", "") or settings.get("local_model", "llama3"))
+    # Blank is legitimate: a llama.cpp server serves whatever model was loaded
+    # on the command line, so the user has only an address to give us. Leave it
+    # empty and let the translator probe /v1/models at first use.
+    model = str(settings.get("local_llm_model", "") or settings.get("local_model", "")).strip()
     base_url = str(
         settings.get("local_llm_url")
         or settings.get("local_llm_base_url")
         or settings.get("local_base_url")
-        or "http://localhost:11434/v1"
+        or "http://localhost:8080/v1"
     )
     if re.search(r"hy[-_ ]?mt2", model, re.IGNORECASE):
         logger.info("Hy-MT2 model selected in Local LLM settings; using Hy-MT2 translator")

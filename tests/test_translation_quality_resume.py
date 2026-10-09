@@ -38,8 +38,19 @@ class QualityAndResumeTests(unittest.TestCase):
 
     def test_quality_detects_codes_placeholders_and_line_breaks(self) -> None:
         self.assertFalse(translation_issues("Hello \\V[1] {name}\nNext", "Merhaba \\V[1] {name}\nSonraki"))
-        issues = translation_issues("Hello \\V[1] {name}\nNext", "Merhaba \\V[2] {other} Sonraki")
-        self.assertEqual(len(issues), 3)
+        # Line breaks now allow LINE_BREAK_TOLERANCE of drift, so the source
+        # needs more than one break for a dropped-newline failure to register.
+        issues = translation_issues(
+            "Hello \\V[1] {name}\nA\nB\nNext", "Merhaba \\V[2] {other} A B Next"
+        )
+        self.assertEqual(sorted(issues), [
+            "format placeholders changed", "game codes or tags changed", "line break count changed",
+        ])
+
+    def test_minor_reflow_is_not_an_issue(self) -> None:
+        """One gained or lost break is normal reflow, not a corruption."""
+        self.assertEqual(translation_issues("Hello\nNext", "Hello Next"), [])
+        self.assertEqual(translation_issues("Hello Next", "Hello\nNext"), [])
 
     def test_resumes_from_saved_window_after_interruption(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

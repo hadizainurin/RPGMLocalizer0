@@ -334,6 +334,7 @@ class AutoTranslateWorker(QThread):
         self.category_filter = category_filter
         self.search_query = search_query
         self._cancel = False
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def cancel(self) -> None:
         """Request graceful cancellation; the worker checks this flag between batches."""
@@ -372,6 +373,27 @@ class AutoTranslateWorker(QThread):
         translated_count = 0
         last_id = 0
 
+        # Run-wide memo of cleaned-source -> translation. The translator dedups
+        # only inside a single call, and this worker pages 100 rows at a time,
+        # so without this every repeat of "\u306f\u3044" / an item name in another file was
+        # paid for again. RPG corpora are heavily repetitive, so this is the
+        # single largest saving on a big project.
+        seen_translations: dict[str, str] = {}
+        cache_hits = 0
+        memo_hits = 0
+
+        translation_cache = None
+        if self.settings.get("use_cache", True):
+            try:
+                from src.core.cache import get_cache
+                translation_cache = get_cache(
+                    cache_dir=get_cache_dir(get_project_id(self.settings.get("project_path", ""))),
+                    project_id=get_project_id(self.settings.get("project_path", "")),
+                    target_lang=target_lang,
+                )
+            except Exception as cache_exc:
+                self.logger.warning("Translation cache unavailable: %s", cache_exc)
+
         try:
             if isinstance(translator, HyMT2Translator):
                 loop.run_until_complete(translator.verify_connection())
@@ -399,6 +421,35 @@ class AutoTranslateWorker(QThread):
                 terms_by_id: dict[int, dict] = {}
                 original_by_id: dict[int, str] = {}
 
+                retry_ids: list[int] = []
+
+                def _apply(eid_raw: Any, translated: str, memoize: bool = True) -> None:
+                    try:
+                        eid = int(eid_raw)
+                    except (ValueError, TypeError):
+                        return
+                    segs = segments_by_id.get(eid)
+                    if any(token not in translated for token in terms_by_id.get(eid, {})):
+                        return
+                    restored = reassemble(translated, segs) if segs else translated
+                    if glossary:
+                        restored = glossary.restore_terms(restored, terms_by_id.get(eid, {}))
+                    if translation_issues(original_by_id[eid], restored):
+                        if eid not in retry_ids:
+                            retry_ids.append(eid)
+                        return
+                    pairs.append((eid, restored))
+                    if memoize:
+                        # Key on the cleaned source so the next identical string
+                        # anywhere in the project is free.
+                        source_clean = clean_by_id.get(eid)
+                        if source_clean:
+                            seen_translations[source_clean] = translated
+                            if translation_cache is not None:
+                                translation_cache.set(
+                                    source_clean, translated, source_lang, target_lang
+                                )
+
                 for entry in batch:
                     orig: str = entry["original_text"]
                     protected, term_map = glossary.protect_terms(orig) if glossary else (orig, {})
@@ -415,31 +466,29 @@ class AutoTranslateWorker(QThread):
                     clean_by_id[entry["id"]] = clean
                     terms_by_id[entry["id"]] = term_map
                     original_by_id[entry["id"]] = orig
+
+                    # Already translated this exact string earlier in the run,
+                    # or in an earlier run? Reuse it instead of paying again.
+                    known = seen_translations.get(clean)
+                    if known is not None:
+                        memo_hits += 1
+                        _apply(entry["id"], known, memoize=False)
+                        continue
+                    if translation_cache is not None:
+                        cached = translation_cache.get(clean, source_lang, target_lang)
+                        if cached:
+                            cache_hits += 1
+                            seen_translations[clean] = cached
+                            _apply(entry["id"], cached, memoize=False)
+                            continue
+
                     merger.add(
                         key=str(entry["id"]),
                         text=clean,
                         context_info=entry.get("tag", ""),
                     )
 
-                def _apply(eid_raw: Any, translated: str) -> None:
-                    try:
-                        eid = int(eid_raw)
-                    except (ValueError, TypeError):
-                        return
-                    segs = segments_by_id.get(eid)
-                    if any(token not in translated for token in terms_by_id.get(eid, {})):
-                        return
-                    restored = reassemble(translated, segs) if segs else translated
-                    if glossary:
-                        restored = glossary.restore_terms(restored, terms_by_id.get(eid, {}))
-                    if translation_issues(original_by_id[eid], restored):
-                        if eid not in retry_ids:
-                            retry_ids.append(eid)
-                        return
-                    pairs.append((eid, restored))
-
                 merged_requests = merger.get_requests()
-                retry_ids: list[int] = []
                 if merged_requests:
                     batch_progress = 0
 
@@ -454,7 +503,7 @@ class AutoTranslateWorker(QThread):
                         pct = min(100, int(current / total_untranslated * 100))
                         self.progress.emit(
                             pct, 100,
-                            f"{current}/{total_untranslated} · {speed:.1f} metin/sn · kalan {minutes}dk {seconds}sn",
+                            f"{current}/{total_untranslated} · {speed:.1f} strings/s · {minutes}m {seconds}s left",
                         )
 
                     req_objs = [
@@ -517,7 +566,7 @@ class AutoTranslateWorker(QThread):
                 pct = min(100, int(completed / max(total_untranslated, 1) * 100))
                 self.progress.emit(
                     pct, 100,
-                    f"{completed}/{total_untranslated} · {completed / max(time.monotonic() - started_at, 0.001):.1f} metin/sn",
+                    f"{completed}/{total_untranslated} · {completed / max(time.monotonic() - started_at, 0.001):.1f} strings/s",
                 )
 
         except Exception as exc:
@@ -526,6 +575,18 @@ class AutoTranslateWorker(QThread):
         finally:
             loop.run_until_complete(translator.close())
             loop.close()
+            if translation_cache is not None:
+                try:
+                    translation_cache.save()
+                except Exception as save_exc:
+                    self.logger.warning("Could not persist translation cache: %s", save_exc)
+            reused = memo_hits + cache_hits
+            if reused:
+                self.logger.info(
+                    "Auto-translate reused %d strings without a request "
+                    "(%d repeats within this run, %d from the cache).",
+                    reused, memo_hits, cache_hits,
+                )
 
         if self._cancel:
             self.finished.emit(translated_count, f"Cancelled. {translated_count} strings translated.")

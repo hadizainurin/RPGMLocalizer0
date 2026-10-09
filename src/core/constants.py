@@ -107,7 +107,8 @@ AI_DEFAULT_TIMEOUT = 120  # seconds
 AI_LOCAL_TIMEOUT = 180    # seconds, for local LLMs
 AI_DEFAULT_MAX_TOKENS = 2048
 AI_MAX_RETRIES = 3
-AI_LOCAL_URL = "http://localhost:11434/v1"  # Default Ollama URL
+AI_LOCAL_URL = "http://localhost:8080/v1"  # Default llama.cpp server URL
+AI_LOCAL_URL_OLLAMA = "http://localhost:11434/v1"  # Ollama's default, for reference
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",

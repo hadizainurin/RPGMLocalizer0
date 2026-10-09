@@ -14,9 +14,8 @@ USER_PROMPT = (
 
 
 def _make(**kwargs) -> LocalLLMTranslator:
-    return LocalLLMTranslator(
-        model="qwen2.5", base_url="http://127.0.0.1:8080/v1", api_key="", **kwargs
-    )
+    kwargs.setdefault("model", "qwen2.5")
+    return LocalLLMTranslator(base_url="http://127.0.0.1:8080/v1", api_key="", **kwargs)
 
 
 class ParseTranslationsTests(unittest.TestCase):
@@ -92,3 +91,65 @@ class PromptModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlankModelTests(unittest.TestCase):
+    """llama.cpp users supply only an address; a blank model must not become 'llama3'."""
+
+    def test_blank_model_is_not_coerced_by_factory(self) -> None:
+        from src.core.translators.manager import create_translator
+        tr = create_translator({
+            "engine": "local_llm",
+            "local_llm_url": "http://192.168.1.50:8080/v1",
+            "local_llm_model": "",
+        })
+        self.assertIsInstance(tr, LocalLLMTranslator)
+        self.assertEqual(tr.model, "")
+        self.assertFalse(tr._model_probed)
+
+    def test_named_model_is_kept_and_not_probed(self) -> None:
+        tr = _make(model="qwen2.5")
+        self.assertEqual(tr.model, "qwen2.5")
+        self.assertTrue(tr._model_probed)
+
+    def test_endpoint_built_from_base_url(self) -> None:
+        tr = LocalLLMTranslator(model="", base_url="http://192.168.1.50:8080/v1", api_key="")
+        self.assertEqual(tr.endpoint, "http://192.168.1.50:8080/v1/chat/completions")
+
+    def test_probe_falls_back_when_server_unreachable(self) -> None:
+        import asyncio
+        tr = LocalLLMTranslator(model="", base_url="http://127.0.0.1:9/v1", api_key="")
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(tr._ensure_model())
+        self.assertEqual(tr.model, LocalLLMTranslator.FALLBACK_MODEL)
+
+    def test_hy_mt2_does_not_probe(self) -> None:
+        from src.core.translators.services import HyMT2Translator
+        self.assertFalse(HyMT2Translator.PROBE_MODEL_IF_BLANK)
+
+
+class DefaultsTests(unittest.TestCase):
+    """A fresh install should point at llama.cpp with no model name."""
+
+    def test_translator_class_defaults(self) -> None:
+        tr = LocalLLMTranslator()
+        self.assertEqual(tr.base_url, "http://localhost:8080/v1")
+        self.assertEqual(tr.model, "")
+
+    def test_factory_defaults_with_no_settings(self) -> None:
+        from src.core.translators.manager import create_translator
+        tr = create_translator({"engine": "local_llm"})
+        self.assertEqual(tr.base_url, "http://localhost:8080/v1")
+        self.assertEqual(tr.model, "")
+
+    def test_constants_default(self) -> None:
+        from src.core.constants import AI_LOCAL_URL
+        self.assertEqual(AI_LOCAL_URL, "http://localhost:8080/v1")
+
+    def test_settings_defaults(self) -> None:
+        from src.backend.settings_backend import SettingsBackend
+        defaults = SettingsBackend.__init__.__doc__  # placeholder guard
+        del defaults
+        import re, io as _io
+        src = _io.open("src/backend/settings_backend.py", encoding="utf-8").read()
+        self.assertIn('"local_llm_url": "http://localhost:8080/v1"', src)
+        self.assertIn('"local_llm_model": ""', src)

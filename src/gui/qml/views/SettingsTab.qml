@@ -90,16 +90,29 @@ Item {
                 TextArea {
                     id: promptArea
                     text: promptComp.text
-                    placeholderText: promptComp.placeholder
                     wrapMode: TextEdit.Wrap
                     selectByMouse: true
                     color: t ? t.textPrimary : "#f0f0ff"
-                    placeholderTextColor: t ? t.textMuted : "#55556a"
                     font.pixelSize: t ? t.fontSizeSM : 12
                     font.family: "Consolas, Menlo, monospace"
                     background: Item {}
                     onActiveFocusChanged: {
                         if (!activeFocus) promptComp.editingFinished(text)
+                    }
+
+                    // Explicit hint instead of placeholderText: it must disappear
+                    // the moment there is any content, including content restored
+                    // from settings rather than typed.
+                    Text {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        visible: promptArea.text.length === 0 && !promptArea.activeFocus
+                        text: promptComp.placeholder
+                        wrapMode: Text.Wrap
+                        color: t ? t.textMuted : "#55556a"
+                        font.pixelSize: t ? t.fontSizeSM : 12
+                        font.family: promptArea.font.family
                     }
                 }
             }
@@ -445,15 +458,23 @@ Item {
                             InputField {
                                 label: localeManager.strings.settings.base_url_label
                                 text: settingsBackend.localLlmUrl
-                                placeholder: "http://localhost:11434/v1"
+                                placeholder: "http://localhost:8080/v1"
                                 onEditingFinished: (newText) => { settingsBackend.localLlmUrl = newText }
                             }
                             InputField {
                                 label: localeManager.strings.settings.model_name_label
                                 text: settingsBackend.localLlmModel
-                                placeholder: "llama3"
+                                placeholder: "(leave empty for llama.cpp)"
                                 onEditingFinished: (newText) => { settingsBackend.localLlmModel = newText }
                             }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: localeManager.strings.settings.local_llm_model_hint
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
                         }
 
                         RowLayout {

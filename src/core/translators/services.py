@@ -103,6 +103,47 @@ class SegmentBatchTranslator(BaseTranslator):
                 needs_trans.append(i)
         return needs_trans
 
+    #: How many times a failing batch may be halved before the remainder is
+    #: given up on. Depth 2 bounds a failure to at most 1 + 2 + 4 = 7 requests
+    #: regardless of batch size; translating one item per request instead cost
+    #: one full system prompt per line, which dominated spend on large games.
+    MAX_SPLIT_DEPTH = 2
+
+    async def _split_and_translate(
+        self, clean_batch: List[str], src: str, tgt: str, depth: int = 0
+    ) -> List[Optional[str]]:
+        """Recover from a malformed batch response by halving, not by exploding.
+
+        Unresolved items come back as None; the caller leaves those entries
+        untranslated so a later pass (or the user) can deal with them. That is
+        far cheaper than paying a system prompt per line to rescue a few.
+        """
+        if len(clean_batch) <= 1:
+            result = await self._translate_clean_texts(clean_batch, src, tgt)
+            if result and len(result) == len(clean_batch):
+                return list(result)
+            return [None] * len(clean_batch)
+
+        if depth >= self.MAX_SPLIT_DEPTH:
+            logger.warning(
+                "Batch of %d still malformed at split depth %d; leaving it "
+                "untranslated rather than retrying line by line.",
+                len(clean_batch), depth,
+            )
+            return [None] * len(clean_batch)
+
+        mid = len(clean_batch) // 2
+        out: List[Optional[str]] = []
+        for half in (clean_batch[:mid], clean_batch[mid:]):
+            if not half:
+                continue
+            result = await self._translate_clean_texts(half, src, tgt)
+            if result and len(result) == len(half):
+                out.extend(result)
+            else:
+                out.extend(await self._split_and_translate(half, src, tgt, depth + 1))
+        return out
+
     async def _translate_with_retry_and_fallback(
         self, clean_batch: List[str], src: str, tgt: str
     ) -> Optional[List[Optional[str]]]:
@@ -111,11 +152,7 @@ class SegmentBatchTranslator(BaseTranslator):
             translated_clean = await self._translate_clean_texts(clean_batch, src, tgt)
             if not translated_clean or len(translated_clean) != len(clean_batch):
                 if len(clean_batch) > 1:
-                    indiv_res: List[Optional[str]] = []
-                    for single_txt in clean_batch:
-                        sub = await self._translate_clean_texts([single_txt], src, tgt)
-                        indiv_res.append(sub[0] if sub and sub[0] else None)
-                    return indiv_res
+                    return await self._split_and_translate(clean_batch, src, tgt)
                 break
 
             is_identity = all(
@@ -279,6 +316,21 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
 
         return [str(item) for item in parsed]
 
+    #: Output cap = input characters x this, clamped to the bounds below. A
+    #: translation is roughly the length of its source; without any cap a model
+    #: that starts looping generates until it exhausts its context window.
+    OUTPUT_BUDGET_RATIO = 1.0
+    OUTPUT_BUDGET_MIN = 256
+    OUTPUT_BUDGET_MAX = 4096
+
+    @classmethod
+    def _output_token_budget(cls, clean_texts: Sequence[str]) -> int:
+        """Size max_tokens from the input so a runaway response is cut short."""
+        total_chars = sum(len(text or "") for text in clean_texts)
+        # ~2 chars per token is pessimistic enough for CJK sources.
+        estimated = int((total_chars / 2) * cls.OUTPUT_BUDGET_RATIO) + 64
+        return max(cls.OUTPUT_BUDGET_MIN, min(cls.OUTPUT_BUDGET_MAX, estimated))
+
     def _dump_exchange(self, kind: str, data: Any) -> None:
         """Write the raw request/response to logs when payload dumping is enabled.
 
@@ -330,6 +382,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                 {"role": "user", "content": json.dumps(clean_texts, ensure_ascii=False)},
             ],
             "temperature": 0.2,
+            "max_tokens": self._output_token_budget(clean_texts),
         }
         self._dump_exchange("request", payload)
 
@@ -383,10 +436,13 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
     #: Tokens substituted into a user-authored prompt before it is sent.
     PROMPT_TOKENS = ("{source}", "{target}", "{source_code}", "{target_code}")
 
+    #: Subclasses that resolve their own model id set this False.
+    PROBE_MODEL_IF_BLANK = True
+
     def __init__(
         self,
-        model: str = "llama3",
-        base_url: str = "http://localhost:11434/v1",
+        model: str = "",
+        base_url: str = "http://localhost:8080/v1",
         api_key: str = "",
         system_prompt: str = "",
         prompt_mode: str = "append",
@@ -399,6 +455,13 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         if self.prompt_mode not in ("append", "override"):
             self.prompt_mode = "append"
         self.debug_dump = bool(debug_dump)
+        self._model_probed = bool(self.model) or not self.PROBE_MODEL_IF_BLANK
+        if not self.model and self.PROBE_MODEL_IF_BLANK:
+            logger.info(
+                "Local LLM: no model name configured; will probe %s/models on first "
+                "request (llama.cpp serves whatever model it was started with).",
+                self.base_url.rstrip("/"),
+            )
         if self.system_prompt and self.prompt_mode == "override":
             logger.info(
                 "Local LLM: custom prompt in OVERRIDE mode (%d chars). The built-in "
@@ -406,6 +469,55 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
                 "or {\"t\": [...]} of the same length and order as the input.",
                 len(self.system_prompt),
             )
+
+    #: Used when the server exposes no model list and the user named none.
+    FALLBACK_MODEL = "local-model"
+
+    async def _ensure_model(self) -> None:
+        """Resolve a model id once, for servers the user addresses only by IP.
+
+        llama.cpp's server loads one model from the command line and ignores the
+        ``model`` field, so requiring a name in the UI is pointless there. Ask
+        ``/v1/models`` for the real id; if that is unavailable, send a harmless
+        placeholder rather than a wrong name like "llama3", which Ollama and
+        LM Studio would reject with 404.
+        """
+        if self._model_probed:
+            return
+        self._model_probed = True
+        url = self.base_url.rstrip("/") + "/models"
+        try:
+            session = await self._get_session()
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    entries = data.get("data") if isinstance(data, dict) else None
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            model_id = (entry or {}).get("id") if isinstance(entry, dict) else None
+                            if model_id:
+                                self.model = str(model_id)
+                                logger.info("Local LLM: using discovered model '%s'", self.model)
+                                return
+                logger.warning(
+                    "Local LLM: %s returned HTTP %s; no model list available.", url, resp.status
+                )
+        except Exception as exc:
+            logger.warning(
+                "Local LLM: could not read %s (%s: %s). Check that the server is "
+                "running and the Base URL is reachable.", url, type(exc).__name__, exc
+            )
+        self.model = self.FALLBACK_MODEL
+        logger.info("Local LLM: falling back to model id '%s'", self.model)
+
+    async def _translate_clean_texts(
+        self, clean_texts: List[str], source_lang: str, target_lang: str
+    ) -> List[Optional[str]]:
+        await self._ensure_model()
+        return await super()._translate_clean_texts(clean_texts, source_lang, target_lang)
 
     @staticmethod
     def _lang_display(code: Optional[str]) -> str:
@@ -461,6 +573,8 @@ HY_MT2_LANGUAGES: Dict[str, str] = {
 
 class HyMT2Translator(LocalLLMTranslator):
     """Hy-MT2 via a local OpenAI-compatible llama.cpp, Ollama, or LM Studio server."""
+
+    PROBE_MODEL_IF_BLANK = False  # resolved by verify_connection instead
 
     def __init__(
         self,

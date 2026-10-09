@@ -462,7 +462,7 @@ Item {
                         { id: "openai",         name: "OpenAI / ChatGPT",   icon: "🤖", desc: localeManager.strings.home.engine_desc_openai },
                         { id: "deepseek",       name: "DeepSeek",           icon: "🐳", desc: localeManager.strings.home.engine_desc_deepseek },
                         { id: "gemini",         name: "Google Gemini",      icon: "✨", desc: localeManager.strings.home.engine_desc_gemini },
-                        { id: "local_llm",      name: "Local LLM (Ollama)", icon: "🦙", desc: localeManager.strings.home.engine_desc_local_llm },
+                        { id: "local_llm",      name: "Local LLM (llama.cpp / Ollama)", icon: "🦙", desc: localeManager.strings.home.engine_desc_local_llm },
                         { id: "hy_mt2",         name: "Hy-MT2 (Local)",     icon: "🈯", desc: localeManager.strings.home.engine_desc_local_llm },
                         { id: "libretranslate", name: "LibreTranslate",     icon: "🔓", desc: localeManager.strings.home.engine_desc_libretranslate },
                     ]
@@ -785,13 +785,13 @@ Item {
                                     InputField {
                                         label: localeManager.strings.home.local_llm_base_url_label
                                         text: settingsBackend.localLlmUrl
-                                        placeholder: "http://localhost:11434/v1"
+                                        placeholder: "http://localhost:8080/v1"
                                         onEditingFinished: (newText) => { settingsBackend.localLlmUrl = newText }
                                     }
                                     InputField {
                                         label: localeManager.strings.home.model_name_label
                                         text: settingsBackend.localLlmModel
-                                        placeholder: "llama3, mistral, qwen2.5..."
+                                        placeholder: "(empty for llama.cpp) llama3, qwen2.5..."
                                         onEditingFinished: (newText) => { settingsBackend.localLlmModel = newText }
                                     }
                                 }

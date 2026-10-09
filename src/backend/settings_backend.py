@@ -57,8 +57,8 @@ class SettingsBackend(QObject):
             "gemini_api_key": "",
             "gemini_model": "gemini-2.5-flash",
             "gemini_safety_settings": "BLOCK_NONE",
-            "local_llm_url": "http://localhost:11434/v1",
-            "local_llm_model": "llama3",
+            "local_llm_url": "http://localhost:8080/v1",
+            "local_llm_model": "",
             "local_llm_prompt": "",
             "local_llm_prompt_mode": "append",
             "local_llm_debug_dump": False,
@@ -417,7 +417,7 @@ class SettingsBackend(QObject):
 
     @pyqtProperty(str, notify=settingsChanged)
     def localLlmUrl(self) -> str:
-        return str(self._get("local_llm_url", "http://localhost:11434/v1"))
+        return str(self._get("local_llm_url", "http://localhost:8080/v1"))
 
     @localLlmUrl.setter
     def localLlmUrl(self, val: str) -> None:
@@ -425,7 +425,7 @@ class SettingsBackend(QObject):
 
     @pyqtProperty(str, notify=settingsChanged)
     def localLlmModel(self) -> str:
-        return str(self._get("local_llm_model", "llama3"))
+        return str(self._get("local_llm_model", ""))
 
     @localLlmModel.setter
     def localLlmModel(self, val: str) -> None:

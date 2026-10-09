@@ -1224,7 +1224,7 @@ class LocalLLMTranslator(OpenAITranslator):
         **kwargs: Any,
     ) -> None:
         resolved_base_url = base_url or AI_LOCAL_URL
-        resolved_model = model or "llama3.2"
+        resolved_model = model or ""
 
         if config_manager and hasattr(config_manager, "translation_settings"):
             ts = config_manager.translation_settings
