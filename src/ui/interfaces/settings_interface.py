@@ -247,7 +247,7 @@ class SettingsInterface(ScrollArea):
         self.chk_glossary = SwitchSettingCard(
             FIF.BOOK_SHELF,
             "Enable Project Glossary",
-            "Apply mandatory term replacements (e.g., Potion -> İksir) after translation.",
+            "Apply mandatory term replacements (e.g., ポーション -> Potion) after translation.",
             parent=self.glossaryGroup
         )
         self.chk_glossary.setChecked(False)
@@ -370,8 +370,8 @@ class SettingsInterface(ScrollArea):
         )
         if path:
             sample = {
-                "Potion": "İksir",
-                "Sword": "Kılıç", 
+                "\u30dd\u30fc\u30b7\u30e7\u30f3": "Potion",
+                "\u5263": "Sword",
                 "Dragon": "Ejderha"
             }
             try:

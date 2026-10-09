@@ -159,7 +159,7 @@ Item {
 
             // Rescan Button
             TactileButton {
-                label: editorBackend.scanAttempted ? localeManager.strings.editor.rescan_button : (localeManager.strings.editor.load_project_button || "Projeyi Yükle")
+                label: editorBackend.scanAttempted ? localeManager.strings.editor.rescan_button : (localeManager.strings.editor.load_project_button || "Load Project")
                 variant: "ghost"
                 enabled_: !editorBackend.isScanning && !appBackend.isRunning && !editorBackend.isAutoTranslating && editorBackend.projectPath.length > 0
                 onClicked: editorBackend.loadProject(editorBackend.scanAttempted)
@@ -514,7 +514,7 @@ Item {
                         }
                         onActivated: (index) => {
                             var selected = editorBackend.fileList[index]
-                            editorBackend.setSelectedFile(selected === "Tüm Dosyalar" ? "all" : selected)
+                            editorBackend.setSelectedFile(selected === "All Files" ? "all" : selected)
                         }
 
                         background: Rectangle {
@@ -686,7 +686,7 @@ Item {
                             Layout.alignment: Qt.AlignHCenter
                             visible: !editorBackend.isScanning
                             label: (!editorBackend.projectLoaded && editorBackend.projectPath && !editorBackend.scanAttempted)
-                                ? (localeManager.strings.editor.load_project_button || "Projeyi Yükle")
+                                ? (localeManager.strings.editor.load_project_button || "Load Project")
                                 : ((!editorBackend.projectLoaded || editorBackend.totalProjectCount === 0)
                                 ? localeManager.strings.editor.select_game_folder_button
                                 : localeManager.strings.editor.clear_filters_button

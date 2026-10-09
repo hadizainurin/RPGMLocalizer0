@@ -24,7 +24,12 @@ from PyQt6.QtCore import (
     pyqtSlot,
 )
 
-from src.core.editor.editor_store import CATEGORY_LABELS, EditorStore
+from src.core.editor.editor_store import (
+    ALL_FILES_ALIASES,
+    ALL_FILES_LABEL,
+    CATEGORY_LABELS,
+    EditorStore,
+)
 from src.core.editor.syntax_checker import extract_escape_codes
 from src.utils.backup import BackupManager
 from src.utils.file_ops import safe_write
@@ -118,7 +123,7 @@ class EditorTableModel(QAbstractTableModel):
         elif role == self.CategoryRole:
             return row.get("category", "")
         elif role == self.CategoryLabelRole:
-            return CATEGORY_LABELS.get(row.get("category", "other"), "Diğer")
+            return CATEGORY_LABELS.get(row.get("category", "other"), "Other")
         elif role == self.OriginalTextRole:
             return row.get("original_text", "")
         elif role == self.TranslatedTextRole:
@@ -198,7 +203,7 @@ class ScanWorker(QThread):
             from src.core.translation_pipeline import TranslationPipeline
             pipeline = TranslationPipeline(self.settings)
 
-            self.progress.emit(0, 100, "Dosyalar taranıyor...")
+            self.progress.emit(0, 100, "Scanning files...")
 
             target_path = self.project_path
             if os.path.isfile(target_path):
@@ -237,16 +242,16 @@ class ScanWorker(QThread):
                     msg = LocaleManager.get_text(
                         "status_encrypted_wolf",
                         default=(
-                            "Bu WOLF RPG oyunu paketli/şifreli (.wolf) arşiv içeriyor. "
-                            "Çeviri yapabilmek için lütfen önce arşivleri 'Data' klasörüne çıkartın.<br><br>"
+                            "This WOLF RPG game contains packed/encrypted (.wolf) archives. "
+                            "Please extract the archives into the 'Data' folder before translating.<br><br>"
                             "👉 <a href=\"https://github.com/Sinflower/UberWolf/releases\" style=\"color: #9d8dfc; text-decoration: underline;\">"
-                            "UberWolf aracını buradan indirin (GitHub)</a>"
+                            "Download the UberWolf tool here (GitHub)</a>"
                         ),
                     )
                 else:
                     msg = LocaleManager.get_text(
                         "status_no_data",
-                        default="Geçerli bir RPG Maker veya WOLF RPG veri klasörü (.json, .rxdata, .mps, .dat vb.) bulunamadı.",
+                        default="No valid RPG Maker or WOLF RPG data folder found (.json, .rxdata, .mps, .dat, etc.).",
                     )
 
                 self.finished.emit(False, msg, 0)
@@ -254,18 +259,18 @@ class ScanWorker(QThread):
 
             # Check if persistent cache is valid for instant load (<50ms)
             if not self.force_rescan and self.store.is_cache_valid(files):
-                self.progress.emit(100, 100, "Önbellekten anında yüklendi.")
+                self.progress.emit(100, 100, "Loaded instantly from cache.")
                 cur = self.store.conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM entries")
                 total = cur.fetchone()[0]
-                self.finished.emit(True, "Önbellekten başarıyla yüklendi.", total)
+                self.finished.emit(True, "Loaded from cache successfully.", total)
                 return
 
             def on_extract_progress(curr: int, total: int, msg: str) -> None:
                 pct = 15 + int((curr / max(total, 1)) * 55)
                 self.progress.emit(pct, 100, msg)
 
-            self.progress.emit(15, 100, f"{len(files)} dosya ayrıştırılıyor...")
+            self.progress.emit(15, 100, f"Parsing {len(files)} files...")
             all_entries, parsed_files, _ = pipeline._extract_all_text(files, progress_callback=on_extract_progress)
 
             # Build extracted dict for store
@@ -285,7 +290,7 @@ class ScanWorker(QThread):
                 if orig_entries:
                     backup_dict[fp] = {p: t for p, t, _ in orig_entries}
 
-            self.progress.emit(70, 100, "Veritabanı indeksleniyor...")
+            self.progress.emit(70, 100, "Indexing database...")
             total_loaded = self.store.load_entries(
                 extracted_dict,
                 backup_files=backup_dict,
@@ -294,10 +299,10 @@ class ScanWorker(QThread):
                 source_lang=self.settings.get("source_lang", "auto"),
             )
 
-            self.progress.emit(100, 100, "Tamamlandı!")
-            self.finished.emit(True, f"{total_loaded} metin başarıyla yüklendi.", total_loaded)
+            self.progress.emit(100, 100, "Done!")
+            self.finished.emit(True, f"{total_loaded} strings loaded successfully.", total_loaded)
         except Exception as exc:
-            self.finished.emit(False, f"Tarama hatası: {exc}", 0)
+            self.finished.emit(False, f"Scan error: {exc}", 0)
 
 
 
@@ -353,7 +358,7 @@ class AutoTranslateWorker(QThread):
             search_query=self.search_query,
         )
         if total_untranslated == 0:
-            self.finished.emit(0, "Çevrilecek metin bulunamadı.")
+            self.finished.emit(0, "No text found to translate.")
             return
 
         translator = create_translator(self.settings)
@@ -516,16 +521,16 @@ class AutoTranslateWorker(QThread):
                 )
 
         except Exception as exc:
-            self.finished.emit(translated_count, f"Otomatik çeviri hatası: {exc}")
+            self.finished.emit(translated_count, f"Auto-translation error: {exc}")
             return
         finally:
             loop.run_until_complete(translator.close())
             loop.close()
 
         if self._cancel:
-            self.finished.emit(translated_count, f"İptal edildi. {translated_count} metin çevrildi.")
+            self.finished.emit(translated_count, f"Cancelled. {translated_count} strings translated.")
         else:
-            self.finished.emit(translated_count, f"Tamamlandı! {translated_count} metin başarıyla çevrildi.")
+            self.finished.emit(translated_count, f"Done! {translated_count} strings translated successfully.")
 
 
 class EditorBackend(QObject):
@@ -698,15 +703,15 @@ class EditorBackend(QObject):
     def fileList(self) -> list[str]:
         """Return available files scoped to the currently selected category."""
         if not self._store:
-            return ["Tüm Dosyalar"]
+            return [ALL_FILES_LABEL]
 
         cat_map = self._store.get_categories_and_files()
         if self._selected_category == "all":
             all_files = sorted({fn for files in cat_map.values() for fn in files})
-            return ["Tüm Dosyalar"] + all_files
+            return [ALL_FILES_LABEL] + all_files
 
         cat_files = cat_map.get(self._selected_category, [])
-        return ["Tüm Dosyalar"] + cat_files
+        return [ALL_FILES_LABEL] + cat_files
 
     @pyqtProperty(str, notify=filtersChanged)
     def activeFileFilter(self) -> str:
@@ -759,7 +764,7 @@ class EditorBackend(QObject):
         from PyQt6.QtWidgets import QFileDialog
         current_path = getattr(self.app_backend, "projectPath", "")
         folder = QFileDialog.getExistingDirectory(
-            None, "RPG Maker Oyun Klasörünü Seçin", current_path or ""
+            None, "Select RPG Maker Game Folder", current_path or ""
         )
         if folder:
             self.setProjectPath(folder)
@@ -894,7 +899,7 @@ class EditorBackend(QObject):
         if not self._store:
             return
 
-        file_filt = "all" if self._selected_file in ("Tüm Dosyalar", "all", "") else self._selected_file
+        file_filt = "all" if self._selected_file in ALL_FILES_ALIASES else self._selected_file
         rows, total = self._store.query_page(
             search_query=self._search_query,
             category_filter=self._selected_category,
@@ -982,7 +987,7 @@ class EditorBackend(QObject):
 
     @pyqtSlot(str)
     def setSelectedFile(self, val: str) -> None:
-        actual_val = "all" if val in ("Tüm Dosyalar", "all", "") else val
+        actual_val = "all" if val in ALL_FILES_ALIASES else val
         if self._selected_file != actual_val:
             self._selected_file = actual_val
             self._current_page = 1
@@ -1051,10 +1056,10 @@ class EditorBackend(QObject):
     ) -> None:
         """Perform escape-code safe batch replacement across translations."""
         if not self._store or not search_term:
-            self.batchReplaceFinished.emit(0, "Arama terimi boş olamaz.")
+            self.batchReplaceFinished.emit(0, "Search term cannot be empty.")
             return
 
-        filt_f = "all" if file_filter in ("Tüm Dosyalar", "all", "") else file_filter
+        filt_f = "all" if file_filter in ALL_FILES_ALIASES else file_filter
         count = self._store.batch_replace(
             search_term,
             replace_term,
@@ -1065,7 +1070,7 @@ class EditorBackend(QObject):
 
         self._refresh_page()
         self._refresh_stats()
-        msg = f"{count} metin güvenli şekilde güncellendi." if count > 0 else "Değiştirilecek eşleşme bulunamadı."
+        msg = f"{count} strings updated safely." if count > 0 else "No matches found to replace."
         self.batchReplaceFinished.emit(count, msg)
 
     @pyqtSlot(str, result=int)
@@ -1094,14 +1099,14 @@ class EditorBackend(QObject):
     ) -> None:
         """Launch AutoTranslateWorker to translate untranslated strings in the editor database."""
         if not self._store or not self._project_loaded:
-            self.autoTranslateFinished.emit(False, "Proje henüz taranmadı.")
+            self.autoTranslateFinished.emit(False, "Project has not been scanned yet.")
             return
         if self._is_auto_translating or self._is_scanning:
             return
 
         self._is_auto_translating = True
         self._auto_translate_progress = 0
-        self._auto_translate_status = "Başlatılıyor…"
+        self._auto_translate_status = "Starting…"
         self.autoTranslateProgressChanged.emit()
 
         settings = self.settings_backend.get_dict() if hasattr(self.settings_backend, "get_dict") else {}
@@ -1162,7 +1167,7 @@ class EditorBackend(QObject):
         self._auto_translate_status = msg
         self.autoTranslateProgressChanged.emit()
 
-        success = count > 0 or "bulunamadı" in msg
+        success = count > 0 or "No matches found" in msg
         self.autoTranslateFinished.emit(success, msg)
 
         if count > 0:
@@ -1175,12 +1180,12 @@ class EditorBackend(QObject):
     def saveChanges(self) -> None:
         """Surgically save modified files, take atomic backups, and update translation cache."""
         if not self._store or self._modified_count == 0:
-            self.saveFinished.emit(True, "Kaydedilecek değişiklik bulunmuyor.")
+            self.saveFinished.emit(True, "No changes to save.")
             return
 
         changes_by_file, originals_by_file = self._store.get_modified_entries()
         if not changes_by_file:
-            self.saveFinished.emit(True, "Kaydedilecek değişiklik bulunmuyor.")
+            self.saveFinished.emit(True, "No changes to save.")
             return
 
         settings = self.settings_backend.get_dict() if hasattr(self.settings_backend, "get_dict") else {}
@@ -1256,10 +1261,10 @@ class EditorBackend(QObject):
 
             self._refresh_page()
             self._refresh_stats()
-            self.saveFinished.emit(True, f"{len(saved_files)} dosya başarıyla kaydedildi ve yedeklendi.")
+            self.saveFinished.emit(True, f"{len(saved_files)} files saved and backed up successfully.")
         except Exception as exc:
             self.logger.error(f"Error during editor save: {exc}")
-            self.saveFinished.emit(False, f"Kaydetme hatası: {exc}")
+            self.saveFinished.emit(False, f"Save error: {exc}")
 
     @staticmethod
     def _serialize_for_write(fp: str, file_ext: str, parser: Any, new_data: Any) -> bytes:

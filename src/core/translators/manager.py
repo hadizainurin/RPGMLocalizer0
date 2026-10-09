@@ -160,6 +160,9 @@ def _build_local_llm_translator(
         concurrency=concurrency,
         batch_size=batch_size,
         timeout_seconds=timeout,
+        system_prompt=str(settings.get("local_llm_prompt", "") or ""),
+        prompt_mode=str(settings.get("local_llm_prompt_mode", "append") or "append"),
+        debug_dump=bool(settings.get("local_llm_debug_dump", False)),
     )
 
 

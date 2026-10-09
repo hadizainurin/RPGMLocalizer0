@@ -84,14 +84,20 @@ def _build_fts_match_expr(tokens: list[str]) -> str:
 
 
 CATEGORY_LABELS = {
-    "all": "Tümü",
-    "dialogues": "🎭 Diyaloglar & Haritalar",
-    "actors": "👥 Karakterler & Sınıflar",
-    "items": "⚔️ Eşyalar & Yetenekler",
-    "system": "⚙️ Sistem & Terimler",
-    "plugins": "🔌 Eklentiler & Kodlar",
-    "other": "📁 Diğer Dosyalar",
+    "all": "All",
+    "dialogues": "🎭 Dialogue & Maps",
+    "actors": "👥 Characters & Classes",
+    "items": "⚔️ Items & Skills",
+    "system": "⚙️ System & Terms",
+    "plugins": "🔌 Plugins & Scripts",
+    "other": "📁 Other Files",
 }
+
+#: Sentinel for "no file filter". ALL_FILES_LABEL is what the UI shows and
+#: stores; ALL_FILES_ALIASES also accepts the pre-translation Turkish value so
+#: a saved selection from an older build keeps working.
+ALL_FILES_LABEL = "All Files"
+ALL_FILES_ALIASES = ("all", "", ALL_FILES_LABEL, "Tüm Dosyalar")
 
 
 class EditorStore:
@@ -333,7 +339,7 @@ class EditorStore:
                     warnings = validate_codes(original_text, translated_text)
                     lines, overflow = check_line_overflow(translated_text, tag)
                     if overflow:
-                        warnings.append(f"Mesaj kutusu sınırı aşıldı ({lines}/4 satır)")
+                        warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
 
                     has_warning = 1 if warnings else 0
                     warning_msg = " | ".join(warnings) if warnings else ""
@@ -468,7 +474,7 @@ class EditorStore:
             warnings = validate_codes(orig, new_translated)
             lines, overflow = check_line_overflow(new_translated, tag)
             if overflow:
-                warnings.append(f"Mesaj kutusu sınırı aşıldı ({lines}/4 satır)")
+                warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
 
             has_warning = 1 if warnings else 0
             warning_msg = " | ".join(warnings) if warnings else ""
@@ -577,7 +583,7 @@ class EditorStore:
                     warnings = validate_codes(orig, new_trans)
                     lines, overflow = check_line_overflow(new_trans, tag)
                     if overflow:
-                        warnings.append(f"Mesaj kutusu sınırı aşıldı ({lines}/4 satır)")
+                        warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
 
                     updates.append((
                         new_trans,
@@ -687,7 +693,7 @@ class EditorStore:
         ]
         params: list[Any] = []
 
-        if file_filter and file_filter not in ("all", "Tüm Dosyalar"):
+        if file_filter and file_filter not in ALL_FILES_ALIASES:
             clauses.append("entries.file_name = ?")
             params.append(file_filter)
         if category_filter and category_filter != "all":
@@ -781,7 +787,7 @@ class EditorStore:
                 warnings = validate_codes(orig, new_text)
                 lines, overflow = check_line_overflow(new_text, tag)
                 if overflow:
-                    warnings.append(f"Mesaj kutusu sınırı aşıldı ({lines}/4 satır)")
+                    warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
 
                 updates.append((
                     new_text,

@@ -284,10 +284,10 @@ class TranslationPipeline(QObject):
                 msg = LocaleManager.get_text(
                     "status_encrypted_wolf",
                     default=(
-                        "Bu WOLF RPG oyunu paketli/şifreli (.wolf) arşiv içeriyor. "
-                        "Çeviri yapabilmek için lütfen önce arşivleri 'Data' klasörüne çıkartın.<br><br>"
+                        "This WOLF RPG game contains packed/encrypted (.wolf) archives. "
+                        "Please extract the archives into the 'Data' folder before translating.<br><br>"
                         "👉 <a href=\"https://github.com/Sinflower/UberWolf/releases\" style=\"color: #9d8dfc; text-decoration: underline;\">"
-                        "UberWolf aracını buradan indirin (GitHub)</a>"
+                        "Download the UberWolf tool here (GitHub)</a>"
                     ),
                 )
                 self.log_message.emit("warning", msg)
@@ -1182,7 +1182,7 @@ class TranslationPipeline(QObject):
                 try:
                     progress_callback(
                         completed_count, total_files,
-                        f"Ayrıştırılıyor: {os.path.basename(path)} ({completed_count}/{total_files})",
+                        f"Parsing: {os.path.basename(path)} ({completed_count}/{total_files})",
                     )
                 except Exception:
                     pass
@@ -1840,8 +1840,8 @@ class TranslationPipeline(QObject):
                 if isolated:
                     self.log_message.emit(
                         "info",
-                        f"WOLF RPG motorunun çevrilmiş dosyaları okuyabilmesi için {len(isolated)} arşiv "
-                        f"otomatik olarak 'Data/_wolf_original/' klasörüne yedeklendi: {', '.join(isolated)}"
+                        f"{len(isolated)} archive(s) were automatically backed up to 'Data/_wolf_original/' "
+                        f"so the WOLF RPG engine reads the translated files: {', '.join(isolated)}"
                     )
         except Exception as iso_err:
             self.logger.warning("Failed to isolate WOLF archives: %s", iso_err)

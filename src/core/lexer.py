@@ -4,8 +4,8 @@ from typing import List, Tuple, Any
 import logging
 
 # --- RPG Maker Grammar ---
-# Bu gramer, metin içindeki kodları (command) ve düz metni (text) 
-# birbirine karıştırmadan ayırt etmek için tasarlanmıştır.
+# This grammar separates control codes (command) from plain text (text)
+# without letting the two be confused with one another.
 RPG_LEXER_GRAMMAR = r"""
     start: (CODE | TEXT)+
     

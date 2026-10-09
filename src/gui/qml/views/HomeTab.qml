@@ -874,7 +874,7 @@ Item {
                             spacing: 10
 
                             Text {
-                                text: appBackend.detectedEngine.length > 0 ? ("🎮 " + appBackend.detectedEngine) : "📁 Proje Hazır"
+                                text: appBackend.detectedEngine.length > 0 ? ("🎮 " + appBackend.detectedEngine) : "📁 Project Ready"
                                 font.pixelSize: t ? t.fontSizeSM : 12
                                 font.bold: true
                                 color: t ? t.accentLight : "#a89bf9"

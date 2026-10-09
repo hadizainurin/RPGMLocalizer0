@@ -57,6 +57,55 @@ Item {
         }
     }
 
+    // ---- Multi-line Prompt Field ----
+    component PromptField: ColumnLayout {
+        id: promptComp
+        property string label: ""
+        property string text: ""
+        property string placeholder: ""
+        property int minHeight: 160
+        signal editingFinished(string newText)
+        spacing: t ? t.spaceXS : 4
+        Layout.fillWidth: true
+
+        Text {
+            text: promptComp.label
+            font.pixelSize: 11
+            font.bold: true
+            color: t ? t.textSecondary : "#9090b8"
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: promptComp.minHeight
+            radius: 8
+            color: t ? t.bg4 : "#2a2a3a"
+            border.color: promptArea.activeFocus ? (t ? t.accent : "#7c6cf8") : (t ? t.border2 : "#3d3d55")
+            border.width: 1
+
+            ScrollView {
+                anchors.fill: parent
+                anchors.margins: 8
+                clip: true
+
+                TextArea {
+                    id: promptArea
+                    text: promptComp.text
+                    placeholderText: promptComp.placeholder
+                    wrapMode: TextEdit.Wrap
+                    selectByMouse: true
+                    color: t ? t.textPrimary : "#f0f0ff"
+                    placeholderTextColor: t ? t.textMuted : "#55556a"
+                    font.pixelSize: t ? t.fontSizeSM : 12
+                    font.family: "Consolas, Menlo, monospace"
+                    background: Item {}
+                    onActiveFocusChanged: {
+                        if (!activeFocus) promptComp.editingFinished(text)
+                    }
+                }
+            }
+        }
+    }
+
     // ---- Styled Slider Row ----
     component StyledSlider: RowLayout {
         id: sliderRow
@@ -380,9 +429,9 @@ Item {
                             onMoved: (val) => { settingsBackend.hyMt2Workers = Math.round(val) }
                         }
                         InputField {
-                            label: "Çeviri üslubu / Translation style"
+                            label: "Translation style"
                             text: settingsBackend.hyMt2Style
-                            placeholder: "Örn: doğal, tutarlı ve fantastik RPG dili"
+                            placeholder: "e.g. natural, consistent, high-fantasy RPG register"
                             onEditingFinished: (newText) => { settingsBackend.hyMt2Style = newText }
                         }
 
@@ -405,6 +454,53 @@ Item {
                                 placeholder: "llama3"
                                 onEditingFinished: (newText) => { settingsBackend.localLlmModel = newText }
                             }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: t ? t.spaceMD : 12
+
+                            Text {
+                                text: localeManager.strings.settings.local_llm_prompt_mode_label
+                                font.pixelSize: 11
+                                font.bold: true
+                                color: t ? t.textSecondary : "#9090b8"
+                            }
+                            StyledCombo {
+                                id: promptModeCombo
+                                Layout.preferredWidth: 220
+                                model: [
+                                    localeManager.strings.settings.local_llm_prompt_mode_append,
+                                    localeManager.strings.settings.local_llm_prompt_mode_override
+                                ]
+                                currentIndex: settingsBackend.localLlmPromptMode === "override" ? 1 : 0
+                                onActivated: (index) => {
+                                    settingsBackend.localLlmPromptMode = index === 1 ? "override" : "append"
+                                }
+                            }
+                            CheckBox {
+                                text: localeManager.strings.settings.local_llm_debug_dump_label
+                                checked: settingsBackend.localLlmDebugDump
+                                font.pixelSize: t ? t.fontSizeSM : 12
+                                onToggled: { settingsBackend.localLlmDebugDump = checked }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: settingsBackend.localLlmPromptMode === "override"
+                            text: localeManager.strings.settings.local_llm_prompt_override_warning
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.warning : "#e0b050"
+                        }
+
+                        PromptField {
+                            label: localeManager.strings.settings.local_llm_prompt_label
+                            text: settingsBackend.localLlmPrompt
+                            placeholder: localeManager.strings.settings.local_llm_prompt_placeholder
+                            onEditingFinished: (newText) => { settingsBackend.localLlmPrompt = newText }
                         }
 
                         Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }

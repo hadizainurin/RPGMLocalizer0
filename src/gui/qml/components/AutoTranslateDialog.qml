@@ -158,7 +158,7 @@ Popup {
 
         // 2. Active File (if filtered)
         var curFile = editorBackend.activeFileFilter
-        if (curFile && curFile !== "all" && curFile !== "Tüm Dosyalar") {
+        if (curFile && curFile !== "all" && curFile !== "All Files") {
             var fileCount = editorBackend.getScopeUntranslatedCount("file")
             opts.push({
                 id: "file",
@@ -192,7 +192,7 @@ Popup {
         root.scopeList = opts
 
         // If an active file is chosen, default to file scope, otherwise all
-        if (opts.length > 1 && curFile && curFile !== "all" && curFile !== "Tüm Dosyalar") {
+        if (opts.length > 1 && curFile && curFile !== "all" && curFile !== "All Files") {
             scopeCombo.currentIndex = 1
         } else {
             scopeCombo.currentIndex = 0

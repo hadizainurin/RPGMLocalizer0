@@ -13,6 +13,7 @@ import logging
 import random
 import re
 import time
+from io import open as io_open
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -265,8 +266,12 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
             parsed = outcome.items
 
         if isinstance(parsed, dict):
-            if "translations" in parsed and isinstance(parsed["translations"], list):
-                parsed = parsed["translations"]
+            # Accept the common wrapper keys emitted by local models. A custom
+            # user prompt may ask for {"t": [...]} instead of {"translations": [...]}.
+            for _key in ("translations", "t", "items", "result", "output"):
+                if isinstance(parsed.get(_key), list):
+                    parsed = parsed[_key]
+                    break
             else:
                 return None
         elif not isinstance(parsed, list):
@@ -274,7 +279,30 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
 
         return [str(item) for item in parsed]
 
-    def _build_system_prompt(self, target_lang: str) -> str:
+    def _dump_exchange(self, kind: str, data: Any) -> None:
+        """Write the raw request/response to logs when payload dumping is enabled.
+
+        Disabled unless the subclass sets ``debug_dump``. Used to inspect what a
+        local model actually receives after segment cleaning and placeholder
+        masking, which rarely matches what the source text looked like.
+        """
+        if not getattr(self, "debug_dump", False):
+            return
+        try:
+            from src.utils.app_paths import get_logs_dir
+            out_dir = get_logs_dir() / "llm_payloads"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = out_dir / f"{stamp}-{id(self):x}-{kind}.json"
+            with io_open(path, "w", encoding="utf-8") as fh:
+                if isinstance(data, str):
+                    json.dump({"raw": data}, fh, ensure_ascii=False, indent=2)
+                else:
+                    json.dump(data, fh, ensure_ascii=False, indent=2)
+        except Exception as exc:  # dumping must never break a translation run
+            logger.debug("Payload dump failed (%s): %s", type(exc).__name__, exc)
+
+    def _build_system_prompt(self, target_lang: str, source_lang: str = "auto") -> str:
         return (
             f"You are an expert game localizer. Translate each input string into {target_lang}. "
             "Return strictly a JSON array with the exact same number of items in identical order. "
@@ -290,7 +318,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
         if not clean_texts:
             return []
 
-        system_prompt = self._build_system_prompt(target_lang)
+        system_prompt = self._build_system_prompt(target_lang, source_lang)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -303,6 +331,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
             ],
             "temperature": 0.2,
         }
+        self._dump_exchange("request", payload)
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -318,9 +347,15 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                         choices = data.get("choices", [])
                         if choices:
                             content = choices[0].get("message", {}).get("content", "")
+                            self._dump_exchange("response", content)
                             parsed = self._parse_translations(content)
                             if parsed is not None:
                                 return parsed
+                            logger.warning(
+                                "Model output did not parse into a translation list "
+                                "(%d chars). Enable payload dumping to inspect it.",
+                                len(content or ""),
+                            )
                     elif resp.status in (429, 500, 502, 503):
                         await asyncio.sleep((2 ** (attempt - 1)) * 0.5 + random.uniform(0.1, 0.3))
             except Exception:
@@ -343,16 +378,70 @@ class DeepSeekTranslator(OpenAICompatibleTranslator):
 
 
 class LocalLLMTranslator(OpenAICompatibleTranslator):
-    """Local LLM adapter for Ollama and LM Studio servers."""
+    """Local LLM adapter for Ollama, LM Studio and llama.cpp servers."""
+
+    #: Tokens substituted into a user-authored prompt before it is sent.
+    PROMPT_TOKENS = ("{source}", "{target}", "{source_code}", "{target_code}")
 
     def __init__(
         self,
         model: str = "llama3",
         base_url: str = "http://localhost:11434/v1",
         api_key: str = "",
+        system_prompt: str = "",
+        prompt_mode: str = "append",
+        debug_dump: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(api_key=api_key, model=model, base_url=base_url, **kwargs)
+        self.system_prompt = (system_prompt or "").strip()
+        self.prompt_mode = (prompt_mode or "append").strip().lower()
+        if self.prompt_mode not in ("append", "override"):
+            self.prompt_mode = "append"
+        self.debug_dump = bool(debug_dump)
+        if self.system_prompt and self.prompt_mode == "override":
+            logger.info(
+                "Local LLM: custom prompt in OVERRIDE mode (%d chars). The built-in "
+                "output contract is NOT sent; the prompt must specify a JSON array "
+                "or {\"t\": [...]} of the same length and order as the input.",
+                len(self.system_prompt),
+            )
+
+    @staticmethod
+    def _lang_display(code: Optional[str]) -> str:
+        """Map a language code to a full English name for prompt substitution."""
+        if not code or code == "auto":
+            return "the source language"
+        return HY_MT2_LANGUAGES.get(
+            code, HY_MT2_LANGUAGES.get(code.split("-")[0], code)
+        )
+
+    def _render_custom_prompt(self, source_lang: str, target_lang: str) -> str:
+        """Substitute {source}/{target} without str.format().
+
+        A user prompt legitimately contains literal braces (for example a
+        ``{"t": [...]}`` output spec), which makes str.format() raise KeyError.
+        Plain replacement is the only safe substitution here.
+        """
+        text = self.system_prompt
+        values = (
+            self._lang_display(source_lang),
+            self._lang_display(target_lang),
+            source_lang or "auto",
+            target_lang or "",
+        )
+        for token, value in zip(self.PROMPT_TOKENS, values):
+            text = text.replace(token, value)
+        return text
+
+    def _build_system_prompt(self, target_lang: str, source_lang: str = "auto") -> str:
+        base = super()._build_system_prompt(target_lang, source_lang)
+        if not self.system_prompt:
+            return base
+        custom = self._render_custom_prompt(source_lang, target_lang)
+        if self.prompt_mode == "override":
+            return custom
+        return f"{custom}\n\n{base}"
 
 
 HY_MT2_LANGUAGES: Dict[str, str] = {

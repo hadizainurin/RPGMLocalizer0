@@ -93,7 +93,7 @@ def validate_codes(orig: str, trans: str) -> list[str]:
     # Check for unclosed brackets in translation
     if trans:
         for bad_snippet in _find_unclosed_brackets(trans):
-            warnings.append(f"Kapatılmamış kaçış kodu parantezi: '{bad_snippet}'")
+            warnings.append(f"Unclosed escape-code bracket: '{bad_snippet}'")
 
     orig_codes = extract_escape_codes(orig or "")
     trans_codes = extract_escape_codes(trans or "")

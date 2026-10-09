@@ -53,7 +53,14 @@
     "cache_desc": "Ignorar a retradução de textos já traduzidos",
     "clear_cache_button": "🗑  Limpar cache",
     "slider_value_batch": "{count} linhas",
-    "slider_value_requests": "{count} solicitações"
+    "slider_value_requests": "{count} solicitações",
+    "local_llm_prompt_label": "Custom Prompt (Local LLM)",
+    "local_llm_prompt_placeholder": "Leave empty to use the built-in prompt. Use {source} and {target} for language names, {source_code}/{target_code} for codes.",
+    "local_llm_prompt_mode_label": "Prompt Mode",
+    "local_llm_prompt_mode_append": "Append (safe)",
+    "local_llm_prompt_mode_override": "Override (full control)",
+    "local_llm_prompt_override_warning": "Override mode replaces the built-in output contract. Your prompt MUST ask for a JSON array, or {\"t\": [...]}, with exactly the same number of items in the same order as the input - otherwise the batch silently falls back to untranslated text.",
+    "local_llm_debug_dump_label": "Dump payloads to logs"
   },
   "about": {
     "tagline": "Motor de localização autônomo",

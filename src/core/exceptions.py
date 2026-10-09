@@ -29,7 +29,7 @@ class RPGMLocalizerError(Exception):
         """Return human-readable message with optional solution hint."""
         msg = self.message
         if self.solution_hint:
-            msg += f" (Çözüm ipucu: {self.solution_hint})"
+            msg += f" (Hint: {self.solution_hint})"
         return msg
 
     def __str__(self) -> str:
@@ -57,24 +57,24 @@ class TranslationError(RPGMLocalizerError):
 class RateLimitError(TranslationError):
     """Raised when rate limits (HTTP 429) are exceeded."""
 
-    def __init__(self, message: str = "Rate limit aşıldı (HTTP 429)", **kwargs: Any) -> None:
-        kwargs.setdefault("solution_hint", "Lütfen istek gecikmesini artırın veya proxy rotasyonunu etkinleştirin.")
+    def __init__(self, message: str = "Rate limit exceeded (HTTP 429)", **kwargs: Any) -> None:
+        kwargs.setdefault("solution_hint", "Increase the request delay or enable proxy rotation.")
         super().__init__(message=message, **kwargs)
 
 
 class QuotaExceededError(TranslationError):
     """Raised when API quota or credit limit is reached."""
 
-    def __init__(self, message: str = "API kotası tükendi", **kwargs: Any) -> None:
-        kwargs.setdefault("solution_hint", "API anahtarınızı ve sağlayıcı bakiyenizi kontrol edin.")
+    def __init__(self, message: str = "API quota exhausted", **kwargs: Any) -> None:
+        kwargs.setdefault("solution_hint", "Check your API key and your provider account balance.")
         super().__init__(message=message, **kwargs)
 
 
 class NetworkConnectionError(TranslationError):
     """Raised when network connectivity issues occur during translation."""
 
-    def __init__(self, message: str = "Ağ bağlantısı hatası", **kwargs: Any) -> None:
-        kwargs.setdefault("solution_hint", "İnternet bağlantınızı veya ayarlanmış proxy bağlantısını kontrol edin.")
+    def __init__(self, message: str = "Network connection error", **kwargs: Any) -> None:
+        kwargs.setdefault("solution_hint", "Check your internet connection or the configured proxy.")
         super().__init__(message=message, **kwargs)
 
 

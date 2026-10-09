@@ -59,6 +59,9 @@ class SettingsBackend(QObject):
             "gemini_safety_settings": "BLOCK_NONE",
             "local_llm_url": "http://localhost:11434/v1",
             "local_llm_model": "llama3",
+            "local_llm_prompt": "",
+            "local_llm_prompt_mode": "append",
+            "local_llm_debug_dump": False,
             "hy_mt2_url": "http://127.0.0.1:1234/v1",
             "hy_mt2_model": "",
             "hy_mt2_workers": 2,
@@ -427,6 +430,32 @@ class SettingsBackend(QObject):
     @localLlmModel.setter
     def localLlmModel(self, val: str) -> None:
         self._set("local_llm_model", val)
+
+    @pyqtProperty(str, notify=settingsChanged)
+    def localLlmPrompt(self) -> str:
+        return str(self._get("local_llm_prompt", ""))
+
+    @localLlmPrompt.setter
+    def localLlmPrompt(self, val: str) -> None:
+        self._set("local_llm_prompt", val)
+
+    @pyqtProperty(str, notify=settingsChanged)
+    def localLlmPromptMode(self) -> str:
+        mode = str(self._get("local_llm_prompt_mode", "append")).strip().lower()
+        return mode if mode in ("append", "override") else "append"
+
+    @localLlmPromptMode.setter
+    def localLlmPromptMode(self, val: str) -> None:
+        mode = str(val).strip().lower()
+        self._set("local_llm_prompt_mode", mode if mode in ("append", "override") else "append")
+
+    @pyqtProperty(bool, notify=settingsChanged)
+    def localLlmDebugDump(self) -> bool:
+        return bool(self._get("local_llm_debug_dump", False))
+
+    @localLlmDebugDump.setter
+    def localLlmDebugDump(self, val: bool) -> None:
+        self._set("local_llm_debug_dump", bool(val))
 
     @pyqtProperty(str, notify=settingsChanged)
     def hyMt2Url(self) -> str:

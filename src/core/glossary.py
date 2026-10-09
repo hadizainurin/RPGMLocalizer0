@@ -42,8 +42,8 @@ class Glossary:
         Expected format:
         {
             "terms": {
-                "Potion": "İksir",
-                "Hero": "Kahraman"
+                "\u30dd\u30fc\u30b7\u30e7\u30f3": "Potion",
+                "\u52c7\u8005": "Hero"
             },
             "case_sensitive": false
         }
@@ -228,17 +228,17 @@ def create_sample_glossary(output_path: str):
     """Create a sample glossary file for the user."""
     sample = {
         "terms": {
-            "Potion": "İksir",
-            "Hi-Potion": "Güçlü İksir",
-            "Ether": "Ether",
-            "Phoenix Down": "Anka Tüyü",
-            "Hero": "Kahraman",
-            "Attack": "Saldırı",
-            "Defense": "Savunma",
-            "Magic": "Büyü",
+            "\u30dd\u30fc\u30b7\u30e7\u30f3": "Potion",
+            "\u30cf\u30a4\u30dd\u30fc\u30b7\u30e7\u30f3": "Hi-Potion",
+            "\u30a8\u30fc\u30c6\u30eb": "Ether",
+            "\u30d5\u30a7\u30cb\u30c3\u30af\u30b9\u306e\u5c3e": "Phoenix Down",
+            "\u52c7\u8005": "Hero",
+            "\u653b\u6483": "Attack",
+            "\u9632\u5fa1": "Defense",
+            "\u9b54\u6cd5": "Magic",
             "HP": "HP",
             "MP": "MP",
-            "Gold": "Altın"
+            "\u30b4\u30fc\u30eb\u30c9": "Gold"
         },
         "case_sensitive": False
     }
