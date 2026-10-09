@@ -837,10 +837,19 @@ class EditorStore:
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
+        include_translated: bool = False,
     ) -> tuple[str, list[Any]]:
-        clauses: list[str] = [
-            "(entries.translated_text = entries.original_text OR entries.translated_text = '')"
-        ]
+        """Scope clauses for an auto-translate run.
+
+        With `include_translated`, rows that already hold a translation are kept
+        in the queue - that is the "re-translate" mode, where the point is to
+        overwrite earlier output.
+        """
+        clauses: list[str] = []
+        if not include_translated:
+            clauses.append(
+                "(entries.translated_text = entries.original_text OR entries.translated_text = '')"
+            )
         params: list[Any] = []
 
         if file_filter and file_filter not in ALL_FILES_ALIASES:
@@ -863,7 +872,9 @@ class EditorStore:
                 like_term = f"%{cleaned_search}%"
                 params.extend([like_term, like_term])
 
-        where_sql = "WHERE " + " AND ".join(clauses)
+        # In re-translate mode with no filters there is nothing to constrain,
+        # and a bare "WHERE" is a syntax error.
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return where_sql, params
 
     def get_untranslated_count(
@@ -871,9 +882,10 @@ class EditorStore:
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
+        include_translated: bool = False,
     ) -> int:
         """Return the count of untranslated entries matching the given scope filters."""
-        where_sql, params = self._build_untranslated_clauses(file_filter, category_filter, search_query)
+        where_sql, params = self._build_untranslated_clauses(file_filter, category_filter, search_query, include_translated)
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(f"SELECT COUNT(*) FROM entries {where_sql}", params)
@@ -887,13 +899,14 @@ class EditorStore:
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
+        include_translated: bool = False,
         last_id: int = 0,
     ) -> list[dict]:
         """Return a batch of entries whose translated_text equals original_text or is empty.
 
         Supports both keyset pagination (last_id) and classic offset pagination.
         """
-        where_sql, params = self._build_untranslated_clauses(file_filter, category_filter, search_query)
+        where_sql, params = self._build_untranslated_clauses(file_filter, category_filter, search_query, include_translated)
 
         if last_id > 0:
             where_sql += " AND entries.id > ?"

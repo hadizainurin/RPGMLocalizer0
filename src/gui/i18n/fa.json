@@ -223,7 +223,10 @@
       "tr": "ترکی (tr)",
       "it": "ایتالیایی (it)",
       "pt": "پرتغالی (pt)"
-    }
+    },
+    "retranslate_label": "Re-translate lines that already have a translation",
+    "retranslate_desc": "Off: only untranslated lines are sent, so nothing already done is paid for twice. On: every line in the chosen scope is sent again and overwritten.",
+    "info_banner_retranslate": "{count} lines in this scope will be re-translated, overwriting their current translation."
   },
   "batch_replace": {
     "title": "🔍 جستجو و جایگزینی گروهی",

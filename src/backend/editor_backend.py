@@ -327,6 +327,7 @@ class AutoTranslateWorker(QThread):
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
+        retranslate: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -335,6 +336,8 @@ class AutoTranslateWorker(QThread):
         self.file_filter = file_filter
         self.category_filter = category_filter
         self.search_query = search_query
+        #: Overwrite rows that already hold a translation. Normal runs skip them.
+        self.retranslate = retranslate
         self._cancel = False
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -387,9 +390,14 @@ class AutoTranslateWorker(QThread):
             file_filter=self.file_filter,
             category_filter=self.category_filter,
             search_query=self.search_query,
+            include_translated=self.retranslate,
         )
         if total_untranslated == 0:
-            self.finished.emit(0, "No text found to translate.")
+            self.finished.emit(
+                0,
+                "No lines in this scope to re-translate." if self.retranslate
+                else "No untranslated text found in this scope.",
+            )
             return
 
         translator = create_translator(self.settings)
@@ -436,6 +444,7 @@ class AutoTranslateWorker(QThread):
                     file_filter=self.file_filter,
                     category_filter=self.category_filter,
                     search_query=self.search_query,
+                    include_translated=self.retranslate,
                 )
                 if not batch:
                     break
@@ -534,12 +543,12 @@ class AutoTranslateWorker(QThread):
 
                     # Already translated this exact string earlier in the run,
                     # or in an earlier run? Reuse it instead of paying again.
-                    known = seen_translations.get(clean)
+                    known = None if self.retranslate else seen_translations.get(clean)
                     if known is not None:
                         memo_hits += 1
                         _apply(entry["id"], known, memoize=False)
                         continue
-                    if translation_cache is not None:
+                    if translation_cache is not None and not self.retranslate:
                         cached = translation_cache.get(clean, source_lang, target_lang)
                         if cached:
                             cache_hits += 1
@@ -1640,22 +1649,30 @@ class EditorBackend(QObject):
         msg = f"{count} strings updated safely." if count > 0 else "No matches found to replace."
         self.batchReplaceFinished.emit(count, msg)
 
+    @pyqtSlot(str, bool, result=int)
     @pyqtSlot(str, result=int)
-    def getScopeUntranslatedCount(self, scope: str) -> int:
-        """Return untranslated entry count for the specified scope ('all', 'file', 'category', 'filtered')."""
+    def getScopeUntranslatedCount(self, scope: str, include_translated: bool = False) -> int:
+        """Lines a run would process for this scope.
+
+        With `include_translated` this is the re-translate count: every line in
+        scope, not only the ones still untranslated.
+        """
         if not self._store:
             return 0
         if scope == "file":
-            return self._store.get_untranslated_count(file_filter=self._selected_file)
+            return self._store.get_untranslated_count(
+                file_filter=self._selected_file, include_translated=include_translated)
         elif scope == "category":
-            return self._store.get_untranslated_count(category_filter=self._selected_category)
+            return self._store.get_untranslated_count(
+                category_filter=self._selected_category, include_translated=include_translated)
         elif scope == "filtered":
             return self._store.get_untranslated_count(
                 file_filter=self._selected_file,
                 category_filter=self._selected_category,
                 search_query=self._search_query,
+                include_translated=include_translated,
             )
-        return self._store.get_untranslated_count()
+        return self._store.get_untranslated_count(include_translated=include_translated)
 
     @pyqtSlot()
     def startAutoTranslate(
@@ -1663,8 +1680,13 @@ class EditorBackend(QObject):
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
+        retranslate: bool = False,
     ) -> None:
-        """Launch AutoTranslateWorker to translate untranslated strings in the editor database."""
+        """Launch AutoTranslateWorker over the given scope.
+
+        With `retranslate`, lines that already hold a translation are included
+        and overwritten; normally they are skipped.
+        """
         if not self._store or not self._project_loaded:
             self.autoTranslateFinished.emit(False, "Project has not been scanned yet.")
             return
@@ -1683,6 +1705,7 @@ class EditorBackend(QObject):
             file_filter=file_filter,
             category_filter=category_filter,
             search_query=search_query,
+            retranslate=retranslate,
             parent=self,
         )
         self._auto_translate_worker.progress.connect(self._on_auto_translate_progress)
@@ -1716,7 +1739,12 @@ class EditorBackend(QObject):
             c_filter = self._selected_category
             s_query = self._search_query
 
-        self.startAutoTranslate(file_filter=f_filter, category_filter=c_filter, search_query=s_query)
+        self.startAutoTranslate(
+            file_filter=f_filter,
+            category_filter=c_filter,
+            search_query=s_query,
+            retranslate=bool(options.get("retranslate", False)) if options else False,
+        )
 
     @pyqtSlot()
     def cancelAutoTranslate(self) -> None:

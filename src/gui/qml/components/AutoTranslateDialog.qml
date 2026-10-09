@@ -14,6 +14,10 @@ Popup {
 
     // Dynamic scope options (All, File, Category, Filtered)
     property var scopeList: []
+    //: When true every line in scope is sent again, overwriting existing
+    //: translations. Off by default, so a normal run never spends tokens
+    //: redoing work that is already done.
+    property bool retranslate: false
 
     // ---- Styled ComboBox (Dark theme, rounded corners, clean dropdown) ----
     component StyledCombo: ComboBox {
@@ -149,7 +153,7 @@ Popup {
         var opts = []
 
         // 1. All
-        var allCount = editorBackend.getScopeUntranslatedCount("all")
+        var allCount = editorBackend.getScopeUntranslatedCount("all", root.retranslate)
         opts.push({
             id: "all",
             name: "🌐 " + localeManager.strings.auto_translate.scope_all + " (" + allCount + ")",
@@ -159,7 +163,7 @@ Popup {
         // 2. Active File (if filtered)
         var curFile = editorBackend.activeFileFilter
         if (curFile && curFile !== "all" && curFile !== "All Files") {
-            var fileCount = editorBackend.getScopeUntranslatedCount("file")
+            var fileCount = editorBackend.getScopeUntranslatedCount("file", root.retranslate)
             opts.push({
                 id: "file",
                 name: "📁 " + localeManager.strings.auto_translate.scope_file + " [" + curFile + "] (" + fileCount + ")",
@@ -170,7 +174,7 @@ Popup {
         // 3. Active Category (if filtered)
         var curCat = editorBackend.activeCategoryFilter
         if (curCat && curCat !== "all") {
-            var catCount = editorBackend.getScopeUntranslatedCount("category")
+            var catCount = editorBackend.getScopeUntranslatedCount("category", root.retranslate)
             opts.push({
                 id: "category",
                 name: "🏷️ " + localeManager.strings.auto_translate.scope_category + " [" + curCat + "] (" + catCount + ")",
@@ -181,7 +185,7 @@ Popup {
         // 4. Search Filter (if any)
         var curSearch = editorBackend.activeSearchQuery
         if (curSearch && curSearch.trim().length > 0) {
-            var filtCount = editorBackend.getScopeUntranslatedCount("filtered")
+            var filtCount = editorBackend.getScopeUntranslatedCount("filtered", root.retranslate)
             opts.push({
                 id: "filtered",
                 name: "🔍 " + localeManager.strings.auto_translate.scope_filtered + " (" + filtCount + ")",
@@ -317,7 +321,11 @@ Popup {
                                 var count = (root.scopeList.length > scopeCombo.currentIndex && scopeCombo.currentIndex >= 0)
                                     ? root.scopeList[scopeCombo.currentIndex].count
                                     : editorBackend.untranslatedCount
-                                return I18n.format(localeManager.strings.auto_translate.info_banner, {count: count})
+                                return I18n.format(
+                                    root.retranslate
+                                        ? localeManager.strings.auto_translate.info_banner_retranslate
+                                        : localeManager.strings.auto_translate.info_banner,
+                                    {count: count})
                             }
                             font.pixelSize: 12
                             color: t ? t.textPrimary : "#ffffff"
@@ -345,6 +353,37 @@ Popup {
                     }
                 }
 
+
+                // --- Re-translate toggle ---
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    CheckBox {
+                        id: retranslateCheck
+                        checked: root.retranslate
+                        onToggled: {
+                            root.retranslate = checked
+                            root.refreshScopeOptions()
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        Text {
+                            text: localeManager.strings.auto_translate.retranslate_label
+                            font.pixelSize: 12
+                            color: t ? t.textPrimary : "#ffffff"
+                        }
+                        Text {
+                            text: localeManager.strings.auto_translate.retranslate_desc
+                            font.pixelSize: 10
+                            color: t ? t.textSecondary : "#9090b8"
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
                 // --- Language Selectors ---
                 RowLayout {
                     Layout.fillWidth: true
@@ -630,7 +669,8 @@ Popup {
                             "source_lang": selSrc,
                             "target_lang": selTgt,
                             "engine": selEng,
-                            "scope": selScope
+                            "scope": selScope,
+                            "retranslate": root.retranslate
                         }
 
                         if (selEng === "gemini") {

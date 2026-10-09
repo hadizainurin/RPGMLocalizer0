@@ -118,3 +118,59 @@ class UpdateEntrySourceTests(unittest.TestCase):
     def test_both_kinds_are_unsaved(self) -> None:
         self.store.update_entry(self.eid, "x", source="auto")
         self.assertEqual(self.store.get_stats()["unsaved"], 1)
+
+
+class RetranslateModeTests(unittest.TestCase):
+    """Normal runs skip finished lines; re-translate deliberately redoes them."""
+
+    def setUp(self) -> None:
+        self.store = EditorStore(":memory:")
+        self.store.load_entries({
+            "Map001.json": [("p0", "ああ", "dialogue"), ("p1", "いい", "dialogue")]
+        })
+        self.ids = [r["id"] for r in self.store.query_page(page_size=10)[0]]
+        self.store.bulk_apply_auto_translations([(self.ids[0], "already done")])
+        self.settings = {
+            "engine": "pseudo", "source_lang": "ja", "target_lang": "en", "use_cache": False,
+        }
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def _run(self, **kwargs):
+        w = AutoTranslateWorker(self.store, self.settings, **kwargs)
+        out = []
+        w.finished.connect(lambda n, m: out.append((n, m)))
+        w.run()
+        return out[-1]
+
+    def test_default_run_leaves_finished_lines_alone(self) -> None:
+        count, _ = self._run(file_filter="all", category_filter="all")
+        self.assertEqual(count, 1)
+        row = self.store.get_entries([self.ids[0]])[0]
+        self.assertEqual(row["translated_text"], "already done")
+
+    def test_retranslate_overwrites_them(self) -> None:
+        count, _ = self._run(file_filter="all", category_filter="all", retranslate=True)
+        self.assertEqual(count, 2)
+        row = self.store.get_entries([self.ids[0]])[0]
+        self.assertNotEqual(row["translated_text"], "already done")
+
+    def test_retranslate_does_not_reuse_the_run_memo(self) -> None:
+        """Short-circuiting on a remembered translation would make it a no-op."""
+        self._run(file_filter="all", category_filter="all", retranslate=True)
+        for row in self.store.query_page(page_size=10)[0]:
+            self.assertNotEqual(row["translated_text"], row["original_text"])
+
+    def test_counts_reflect_the_mode(self) -> None:
+        self.assertEqual(self.store.get_untranslated_count(), 1)
+        self.assertEqual(self.store.get_untranslated_count(include_translated=True), 2)
+
+    def test_scope_still_applies_in_retranslate_mode(self) -> None:
+        count, _ = self._run(file_filter="all", category_filter="system", retranslate=True)
+        self.assertEqual(count, 0)
+
+    def test_rows_stay_marked_auto(self) -> None:
+        self._run(file_filter="all", category_filter="all", retranslate=True)
+        self.assertEqual(self.store.get_stats()["translated"], 2)
+        self.assertEqual(self.store.get_stats()["modified"], 0)

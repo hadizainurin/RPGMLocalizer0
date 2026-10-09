@@ -438,6 +438,19 @@ class TranslationPipeline(QObject):
         
         return None
 
+    #: Never descend into these: they hold copies of the very files we scan.
+    SCAN_EXCLUDED_DIRS = {".rpgm_backup", "_wolf_original", "__pycache__"}
+
+    @classmethod
+    def _prune_scan_dirs(cls, dirnames: List[str]) -> List[str]:
+        """In-place filter for os.walk, dropping backup and quarantine folders."""
+        keep = [
+            d for d in dirnames
+            if d.lower() not in cls.SCAN_EXCLUDED_DIRS and not d.startswith(".")
+        ]
+        dirnames[:] = keep
+        return dirnames
+
     def _collect_files(self, data_dir: str) -> List[str]:
         """Collect translatable files from data directory and other sources."""
         extensions = ('.json', '.rvdata2', '.rxdata', '.rvdata')
@@ -459,14 +472,16 @@ class TranslationPipeline(QObject):
         # WOLF RPG Editor support (Data/MapData/**/*.mps, Data/BasicData/CommonEvent.dat, Data/BasicData/*.dat)
         wolf_map_dir = self._find_child_case_insensitive(data_dir, "MapData", must_be_dir=True)
         if wolf_map_dir:
-            for root, _, filenames in os.walk(wolf_map_dir):
+            for root, dirnames, filenames in os.walk(wolf_map_dir):
+                self._prune_scan_dirs(dirnames)
                 for fn in sorted(filenames):
                     if fn.lower().endswith(".mps"):
                         files.append(os.path.join(root, fn))
 
         wolf_basic_dir = self._find_child_case_insensitive(data_dir, "BasicData", must_be_dir=True)
         if wolf_basic_dir:
-            for root, _, filenames in os.walk(wolf_basic_dir):
+            for root, dirnames, filenames in os.walk(wolf_basic_dir):
+                self._prune_scan_dirs(dirnames)
                 for fn in sorted(filenames):
                     fn_lower = fn.lower()
                     if fn_lower.endswith(".dat"):
@@ -483,7 +498,8 @@ class TranslationPipeline(QObject):
         # WOLF RPG Editor external scenario texts (Data/Evtext/**/*.txt)
         wolf_evtext_dir = self._find_child_case_insensitive(data_dir, "Evtext", must_be_dir=True)
         if wolf_evtext_dir:
-            for root, _, filenames in os.walk(wolf_evtext_dir):
+            for root, dirnames, filenames in os.walk(wolf_evtext_dir):
+                self._prune_scan_dirs(dirnames)
                 for fn in sorted(filenames):
                     if fn.lower().endswith(".txt"):
                         files.append(os.path.join(root, fn))
