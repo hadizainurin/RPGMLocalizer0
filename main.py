@@ -49,6 +49,16 @@ def main() -> None:
         if non_daemon:
             os._exit(0)
 
+    # Crash logs (logs/crash_*.log) and the system log (logs/system.log).
+    # The close handler is connected before _force_exit, which may os._exit().
+    from src.utils import diagnostics
+    diagnostics.install_crash_handlers()
+
+    def _on_quit() -> None:
+        diagnostics.write_report("app_closing", settings_backend.get_dict())
+        diagnostics.close_crash_handlers()
+
+    app.aboutToQuit.connect(lambda: _on_quit())
     app.aboutToQuit.connect(_force_exit)
 
     settings_backend = SettingsBackend()
@@ -77,6 +87,14 @@ def main() -> None:
         sys.exit(-1)
 
     emit_runtime_diagnostics(app_backend._on_log_message)
+
+    # System log on start-up, in the background so a slow or absent LLM
+    # server never delays opening the app.
+    threading.Thread(
+        target=diagnostics.write_report,
+        args=("app_started", settings_backend.get_dict(), True),
+        daemon=True,
+    ).start()
     sys.exit(app.exec())
 
 

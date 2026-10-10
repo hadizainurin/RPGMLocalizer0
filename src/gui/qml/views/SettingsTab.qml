@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Controls.Material 2.15
 import QtQuick.Layouts 1.15
+import "../components"
 
 Item {
     id: root
@@ -239,7 +240,9 @@ Item {
         ColumnLayout {
             Layout.fillWidth: true; spacing: 2
             Text { text: toggleRowComp.label; font.pixelSize: t ? t.fontSizeMD : 13; color: t ? t.textPrimary : "#f0f0ff" }
-            Text { text: toggleRowComp.desc; font.pixelSize: 11; color: t ? t.textSecondary : "#9090b8"; opacity: 0.85; visible: text.length > 0 }
+            // Wraps: unwrapped, a long description set the card's minimum width
+            // and the whole Engine & Performance card ran off the window.
+            Text { text: toggleRowComp.desc; font.pixelSize: 11; color: t ? t.textSecondary : "#9090b8"; opacity: 0.85; visible: text.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
 
         Rectangle {
@@ -374,6 +377,61 @@ Item {
                                 model: root.uiLangNames
                                 currentIndex: root.uiLangCodeToIndex(localeManager.currentLanguage)
                                 onActivated: (index) => { localeManager.setLanguage(root.uiLangCodes[index]) }
+                            }
+                        }
+                    }
+                }
+
+                // ===== CARD: Settings Backup (export / import) =====
+                AppCard {
+                    Layout.fillWidth: true
+                    implicitHeight: transferCol.implicitHeight + 36
+                    ColumnLayout {
+                        id: transferCol
+                        anchors { fill: parent; margins: 20 }
+                        spacing: 12
+                        RowLayout {
+                            spacing: t ? t.spaceSM : 8
+                            Rectangle { width: 4; height: 16; radius: 2; color: t ? t.accent : "#7c6cf8" }
+                            Text { text: localeManager.strings.settings.transfer_card_title || "Settings Backup"; font.pixelSize: 14; font.bold: true; color: t ? t.textPrimary : "#f0f0ff" }
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: localeManager.strings.settings.transfer_desc || "Save your settings to a file, or load them from one. API keys are never written to the file, and importing leaves your keys unchanged."
+                            font.pixelSize: t ? t.fontSizeSM : 12; color: t ? t.textSecondary : "#9090b8"
+                        }
+                        RowLayout {
+                            spacing: 10
+                            TactileButton {
+                                label: localeManager.strings.settings.export_settings_button || "⬇ Export Settings…"
+                                variant: "ghost"
+                                onClicked: transferStatus.show(settingsBackend.exportSettings())
+                            }
+                            TactileButton {
+                                label: localeManager.strings.settings.import_settings_button || "⬆ Import Settings…"
+                                variant: "ghost"
+                                onClicked: transferStatus.show(settingsBackend.importSettings())
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Text {
+                            id: transferStatus
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: text.length > 0
+                            font.pixelSize: 11
+                            property bool okState: true
+                            color: okState ? ((t && t.success) ? t.success : "#4ade80") : ((t && t.danger) ? t.danger : "#f87171")
+                            function show(res) {
+                                if (!res || res.cancelled) return
+                                okState = !!res.ok
+                                text = res.message || ""
+                                if (typeof toast !== "undefined")
+                                    toast.show(res.ok ? "success" : "error",
+                                               localeManager.strings.settings.transfer_card_title || "Settings Backup",
+                                               text)
                             }
                         }
                     }

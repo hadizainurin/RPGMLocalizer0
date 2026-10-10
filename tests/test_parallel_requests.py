@@ -60,7 +60,7 @@ class ParallelRequestTests(unittest.TestCase):
 
     def test_lines_are_sent_one_per_item_in_groups(self):
         fake, _ = self._run(parallel=1)
-        self.assertEqual([len(c) for c in fake.calls], [15, 15, 10])
+        self.assertEqual([len(c) for c in fake.calls], [14, 13, 13])  # balanced, none over 15
         self.assertFalse(any("RPGMSEP" in t for c in fake.calls for t in c))
         # Consecutive lines stay together, in order.
         self.assertEqual(fake.calls[0][:2], ["台詞00です", "台詞01です"])
@@ -96,3 +96,18 @@ class PageDedupTests(unittest.TestCase):
         store.close()
         self.assertEqual(sent.count("ロマーリオ"), 1)
         self.assertEqual(out["ロマーリオ"], "EN:ロマーリオ")
+
+
+class BalancedGroupTests(unittest.TestCase):
+    def test_no_small_tail_and_slots_finish_together(self):
+        from src.backend.editor_backend import _balanced_groups
+        sizes = [len(g) for g in _balanced_groups(list(range(100)), 12, 2)]
+        self.assertEqual(sum(sizes), 100)
+        self.assertEqual(len(sizes) % 2, 0)
+        self.assertLessEqual(max(sizes), 12)
+        self.assertLessEqual(max(sizes) - min(sizes), 1)
+
+    def test_order_is_kept(self):
+        from src.backend.editor_backend import _balanced_groups
+        groups = _balanced_groups(list(range(25)), 12, 1)
+        self.assertEqual([x for g in groups for x in g], list(range(25)))

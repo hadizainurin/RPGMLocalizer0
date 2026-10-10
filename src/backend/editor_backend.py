@@ -361,6 +361,30 @@ class ScanWorker(QThread):
 
 
 
+def _balanced_groups(items: list, size: int, parallel: int) -> list:
+    """Split `items` into consecutive groups of at most `size`, evenly.
+
+    Fixed-size slicing left a small remainder group (1-8 lines) at the end of
+    every page; with 2 parallel slots, one slot then idled while the other ran
+    it. Here the group count is rounded up to a multiple of `parallel` and the
+    lines spread evenly, so the slots finish a page at about the same time.
+    """
+    if not items:
+        return []
+    size = max(1, size)
+    count = -(-len(items) // size)                       # ceil
+    if parallel > 1 and count > 1:
+        count = -(-count // parallel) * parallel         # round up to multiple
+    count = min(count, len(items))
+    base, extra = divmod(len(items), count)
+    groups, start = [], 0
+    for i in range(count):
+        n = base + (1 if i < extra else 0)
+        groups.append(items[start:start + n])
+        start += n
+    return groups
+
+
 class TranslationProgress:
     """Progress line for an auto-translate run - estimated like a download.
 
@@ -538,7 +562,51 @@ class AutoTranslateWorker(QThread):
 
         return loop.run_until_complete(runner())
 
-    def run(self) -> None:  # noqa: C901
+    def run(self) -> None:
+        """Run, then record the outcome in the diagnostics report."""
+        self._meter = None
+        self._diag_started = time.monotonic()
+        outcome: list = []
+
+        def _grab(count: int, message: str) -> None:
+            outcome.append((count, message))
+
+        self.finished.connect(_grab)
+        try:
+            self._run_impl()
+        finally:
+            try:
+                self.finished.disconnect(_grab)
+            except Exception:
+                pass
+            try:
+                from src.utils import diagnostics
+                meter = self._meter
+                stats = {
+                    "mode": "patch" if self.cache_only else ("retranslate" if self.retranslate else "translate"),
+                    "engine": self.settings.get("engine"),
+                    "scope": {"file": self.file_filter, "category": self.category_filter,
+                              "search": bool(self.search_query)},
+                    "elapsed_seconds": round(time.monotonic() - self._diag_started, 1),
+                    "cancelled": self._cancel,
+                    "lines_written": outcome[-1][0] if outcome else None,
+                    "result_message": outcome[-1][1] if outcome else "no result (crashed?)",
+                }
+                if meter is not None:
+                    stats.update({
+                        "rows_total": meter.total,
+                        "rows_done": meter.done,
+                        "engine_lines": meter.engine_lines,
+                        "engine_seconds": round(meter.engine_seconds, 1),
+                        "lines_per_min": round(60 * meter.rate(), 1),
+                    })
+                diagnostics.record_run(stats)
+                diagnostics.write_report(
+                    "patch_finished" if self.cache_only else "translation_finished", self.settings)
+            except Exception as exc:
+                self.logger.debug("Diagnostics after run failed: %s", exc)
+
+    def _run_impl(self) -> None:  # noqa: C901
         import asyncio
         from src.core.translator import create_translator
         from src.core.translators.base import TranslationRequest
@@ -567,6 +635,10 @@ class AutoTranslateWorker(QThread):
             )
             return
 
+        from src.utils import diagnostics
+        diagnostics.write_report(
+            "patch_started" if self.cache_only else "translation_started",
+            self.settings, probe_server=not self.cache_only)
         translator = None if self.cache_only else create_translator(self.settings)
         glossary_path = self.settings.get("glossary_path", "")
         glossary = Glossary(glossary_path) if self.settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path) else None
@@ -707,7 +779,7 @@ class AutoTranslateWorker(QThread):
                 if r.text not in first_of:
                     first_of[r.text] = len(unique)
                     unique.append(r)
-            groups = [unique[i:i + lines_per_request] for i in range(0, len(unique), lines_per_request)]
+            groups = _balanced_groups(unique, lines_per_request, parallel_requests)
             gate = asyncio.Semaphore(parallel_requests)
 
             async def one(group):
@@ -724,13 +796,18 @@ class AutoTranslateWorker(QThread):
                 loop.run_until_complete(translator.verify_connection())
             started_at = time.monotonic()
             meter = TranslationProgress(total_untranslated)
+            self._meter = meter
 
             def emit_progress() -> None:
                 self.progress.emit(meter.percent(), 100, meter.message())
             while not self._cancel:
                 batch = self.store.get_untranslated_batch(
                     last_id=last_id,
-                    limit=self._BATCH_SIZE,
+                    # Bigger pages for parallel JSON engines: each page ends
+                    # with slots idling while the last request finishes, so
+                    # fewer, larger pages waste less of that tail.
+                    limit=(self._BATCH_SIZE * max(2, parallel_requests)
+                           if json_array_engine and parallel_requests > 1 else self._BATCH_SIZE),
                     file_filter=self.file_filter,
                     category_filter=self.category_filter,
                     search_query=self.search_query,

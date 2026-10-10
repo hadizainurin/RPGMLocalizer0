@@ -119,6 +119,58 @@ class SettingsBackend(QObject):
             d["regex_blacklist"] = [line.strip() for line in raw_regex.split("\n") if line.strip()]
         return d
 
+    # --- Settings export / import (src/utils/settings_transfer.py) ---
+
+    @pyqtSlot(result="QVariantMap")
+    def exportSettings(self) -> Dict[str, Any]:
+        """Ask where to save, then write the settings (API keys excluded)."""
+        from PyQt6.QtWidgets import QFileDialog
+        from src.utils import settings_transfer
+        try:
+            from version import VERSION
+        except Exception:
+            VERSION = "unknown"
+        path, _ = QFileDialog.getSaveFileName(
+            None, "Export Settings", f"rpgmlocalizer-settings-{VERSION}.json",
+            "RPGM Localizer settings (*.json)")
+        if not path:
+            return {"ok": False, "cancelled": True, "message": "Export cancelled."}
+        try:
+            settings_transfer.export_to(path, self.get_dict(), VERSION)
+        except OSError as exc:
+            return {"ok": False, "message": f"Could not write {path}: {exc}"}
+        return {"ok": True, "message": f"Settings exported to {path} (API keys are not included)."}
+
+    @pyqtSlot(result="QVariantMap")
+    def importSettings(self) -> Dict[str, Any]:
+        """Ask for an exported file, check its version, then apply it."""
+        from PyQt6.QtWidgets import QFileDialog
+        from src.utils import settings_transfer
+        path, _ = QFileDialog.getOpenFileName(
+            None, "Import Settings", "", "RPGM Localizer settings (*.json);;All Files (*)")
+        if not path:
+            return {"ok": False, "cancelled": True, "message": "Import cancelled."}
+        return self.importSettingsFrom(path)
+
+    def importSettingsFrom(self, path: str) -> Dict[str, Any]:
+        from src.utils import settings_transfer
+        try:
+            merged, applied, skipped, version = settings_transfer.import_from(path, self._data)
+        except settings_transfer.ImportRefused as exc:
+            return {"ok": False, "message": str(exc)}
+        raw_regex = merged.get("regex_blacklist")
+        if isinstance(raw_regex, list):
+            merged["regex_blacklist"] = "\n".join(raw_regex)
+        self._data = merged
+        self.save()
+        self.settingsChanged.emit()
+        message = f"Imported {len(applied)} settings from version {version or 'unknown'}."
+        if skipped:
+            message += f" Skipped {len(skipped)} not used by this version: {', '.join(skipped[:5])}"
+            message += "…" if len(skipped) > 5 else "."
+        message += " API keys were left unchanged."
+        return {"ok": True, "message": message, "skipped": skipped}
+
     # --- Property Getters & Setters ---
 
     def _get(self, key: str, default: Any = None) -> Any:
