@@ -372,7 +372,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
         chars = sum(len(t or "") for t in clean_texts)
         return max(self.RUNAWAY_TOKENS_FLOOR, self.RUNAWAY_TOKENS_PER_CHAR * chars + 64 * len(clean_texts))
 
-    def _dump_exchange(self, kind: str, data: Any) -> None:
+    def _dump_exchange(self, kind: str, data: Any, exchange_id: Optional[str] = None) -> None:
         """Write the raw request/response to logs when payload dumping is enabled.
 
         Disabled unless the subclass sets ``debug_dump``. Used to inspect what a
@@ -382,16 +382,11 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
         if not getattr(self, "debug_dump", False):
             return
         try:
+            # Rotating request_N / response_N .jsonl files, capped at 500 MB in
+            # total (src/utils/payload_log.py), instead of one file per call.
             from src.utils.app_paths import get_logs_dir
-            out_dir = get_logs_dir() / "llm_payloads"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            path = out_dir / f"{stamp}-{id(self):x}-{kind}.json"
-            with io_open(path, "w", encoding="utf-8") as fh:
-                if isinstance(data, str):
-                    json.dump({"raw": data}, fh, ensure_ascii=False, indent=2)
-                else:
-                    json.dump(data, fh, ensure_ascii=False, indent=2)
+            from src.utils import payload_log
+            payload_log.write(get_logs_dir() / "llm_payloads", kind, data, exchange_id)
         except Exception as exc:  # dumping must never break a translation run
             logger.debug("Payload dump failed (%s): %s", type(exc).__name__, exc)
 
@@ -425,12 +420,13 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
             "temperature": 0.2,
         }
         payload.update(self._payload_extras(len(clean_texts)))
+        exchange_id = f"{time.strftime('%H%M%S')}-{random.randrange(16**6):06x}"
         budget = self._output_token_budget(clean_texts)
         if budget <= 0 and getattr(self, "GUARD_RUNAWAY", False):
             budget = self._runaway_guard(clean_texts)
         if budget > 0:
             payload["max_tokens"] = budget
-        self._dump_exchange("request", payload)
+        self._dump_exchange("request", payload, exchange_id)
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -446,7 +442,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                         choices = data.get("choices", [])
                         if choices:
                             content = choices[0].get("message", {}).get("content", "")
-                            self._dump_exchange("response", content)
+                            self._dump_exchange("response", content, exchange_id)
                             if choices[0].get("finish_reason") == "length":
                                 # Hit the output cap: the model was looping (or the
                                 # batch was too big). Re-sending the same request
@@ -604,7 +600,17 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         mis-escaped quotes, 23 items for 2 - and every rejection cost 2-3 more
         requests through split-and-retry.
         """
-        extras: Dict[str, Any] = {"temperature": self.temperature}
+        # DRY ("don't repeat yourself") sampler, llama.cpp's guard against
+        # loops: logs showed て、テメェええええ！！！ come back as "Y-YOUUUU…"
+        # until the output cap, on every retry, so the line never finished.
+        # It penalises extending a sequence that already repeated, which a
+        # translation essentially never needs. Servers without DRY ignore it.
+        extras: Dict[str, Any] = {
+            "temperature": self.temperature,
+            "dry_multiplier": 0.8,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+        }
         if not self._structured_output_unsupported and item_count > 0:
             extras["response_format"] = {
                 "type": "json_schema",

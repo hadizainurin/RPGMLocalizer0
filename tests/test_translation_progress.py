@@ -19,11 +19,13 @@ class TranslationProgressTests(unittest.TestCase):
         self.clock = _Clock()
         self.p = TranslationProgress(1000, clock=self.clock)
 
-    def test_rough_estimate_from_the_first_second(self):
-        msg = self.p.message()
-        self.assertIn("roughly", msg)
-        self.assertIn("left", msg)
-        self.assertIn("estimating", msg)
+    def test_one_format_from_the_first_second(self):
+        self.assertEqual(self.p.message(),
+                         "0/1000 - 30 lines/min - Elapsed: 0s - Time remaining: 30m 00s")
+
+    def test_elapsed_counts_the_whole_run(self):
+        self.clock.t = 3725.0
+        self.assertIn("Elapsed: 1h 02m 05s", self.p.message())
 
     def test_a_slow_request_raises_the_estimate_while_still_running(self):
         self.p.start_request(12)
@@ -31,7 +33,6 @@ class TranslationProgressTests(unittest.TestCase):
         self.clock.t = 300.0           # five minutes, no reply yet
         after = self.p.seconds_left()
         self.assertGreater(after, before)
-        self.assertIn("waiting on 12 lines 5m 0s", self.p.message())
 
     def test_measurement_takes_over(self):
         # 120 lines measured at 1 line/s: the prior (0.5/s) fades out.
@@ -42,7 +43,7 @@ class TranslationProgressTests(unittest.TestCase):
             self.p.done += 12
         self.assertTrue(self.p.measured())
         self.assertAlmostEqual(self.p.rate(), (120 + 12) / (120 + 24), places=3)
-        self.assertNotIn("estimating", self.p.message())
+        self.assertIn("55 lines/min", self.p.message())
 
     def test_cache_hits_count_as_done_not_as_engine_speed(self):
         self.p.done = 500                # answered from the cache

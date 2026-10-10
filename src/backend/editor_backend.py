@@ -389,6 +389,10 @@ class TranslationProgress:
         self.engine_seconds = 0.0
         self._request_started: Optional[float] = None
         self._request_lines = 0
+        self.started = clock()
+
+    def elapsed(self) -> float:
+        return max(self.clock() - self.started, 0.0)
 
     def _waiting(self) -> float:
         if self._request_started is None:
@@ -434,24 +438,23 @@ class TranslationProgress:
         hours, rem = divmod(seconds, 3600)
         minutes, secs = divmod(rem, 60)
         if hours:
-            return f"{hours}h {minutes}m"
+            return f"{hours}h {minutes:02d}m {secs:02d}s"
         if minutes:
-            return f"{minutes}m {secs}s"
+            return f"{minutes}m {secs:02d}s"
         return f"{secs}s"
 
     def message(self) -> str:
-        rate = self.rate()
-        parts = [f"{self.done}/{self.total}"]
-        speed = f"{rate:.1f} lines/s" if rate >= 1 else f"{60 * rate:.0f} lines/min"
-        left = self._fmt_duration(self.seconds_left())
-        if self.measured():
-            parts += [speed, f"~{left} left"]
-        else:
-            # Still mostly the prior: say so, like a download's first seconds.
-            parts += [f"~{speed} (estimating)", f"roughly {left} left"]
-        if self._request_started is not None:
-            parts.append(f"waiting on {self._request_lines} lines {self._fmt_duration(self._waiting())}")
-        return " · ".join(parts)
+        """X/Y - Z lines/min - Elapsed: ... - Time remaining: ...
+
+        One fixed format from the first second: the remaining time starts as a
+        rough figure and converges on the real one as timings accumulate, the
+        way a download estimate does - no separate "estimating" state.
+        """
+        return (
+            f"{self.done}/{self.total} - {60 * self.rate():.0f} lines/min"
+            f" - Elapsed: {self._fmt_duration(self.elapsed())}"
+            f" - Time remaining: {self._fmt_duration(self.seconds_left())}"
+        )
 
 
 class AutoTranslateWorker(QThread):
