@@ -342,6 +342,20 @@ Item {
         return fallbackId > 0 ? [fallbackId] : []
     }
 
+    //: Report a slot result. Uses the app-wide toast like every other editor
+    //: action, and falls back to the in-view banner if the toast is not in scope,
+    //: so an action can never appear to do nothing.
+    function reportResult(res, title) {
+        var message = (res && res.message) ? res.message : "No result returned."
+        var ok = !!(res && res.ok)
+        if (typeof toast !== "undefined") {
+            toast.show(ok ? "success" : "warning", title, message)
+        } else {
+            root.showNotice(message)
+        }
+        console.log("[Editor] " + title + ": " + message)
+    }
+
     function showNotice(text) {
         root.singleTranslateNotice = text
         singleTranslateNoticeTimer.restart()
@@ -553,7 +567,7 @@ Item {
                 onClicked: {
                     root.flushPendingEdit()
                     var res = editorBackend.exportTranslations("", true)
-                    root.showNotice(res.message)
+                    root.reportResult(res, localeManager.strings.editor.export_translations_button)
                 }
             }
 
@@ -563,7 +577,7 @@ Item {
                 enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating
                 onClicked: {
                     var res = editorBackend.importTranslations("", false)
-                    root.showNotice(res.message)
+                    root.reportResult(res, localeManager.strings.editor.import_translations_button)
                 }
             }
 

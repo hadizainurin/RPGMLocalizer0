@@ -66,7 +66,7 @@ _GREEK_TO_LATIN = str.maketrans({
 _RPGM_CODE_PATTERNS = (
     r'(\[\[.*?\]\]|'                     # [[escaped]]
     r'\{\{.*?\}\}|'                      # {{escaped}}
-    r'\\(?:[cCiIpPfFwWvVnNoOaAhHxXyY]|fs|fn|oc|ow|hc|ac|px|py|wc|tt|bg|cself|sself|self|cdb|udb|sdb|space)\[(?:[^\[\]]*|\[[^\[\]]*\])*\]|'  # Nested brackets like \C[\V[1]], \cself[66], \self[1], \cdb[0:1:0]
+    r'\\[A-Za-z]{1,8}\d{0,2}\s*\[(?:[^\[\]]*|\[[^\[\]]*\])*\]|'  # \c[00] \cself[66] \wE[03] \v1[035] \font [1]
     r'\\c\[\d+\]|'                       # \c[n] - color
     r'\\C\[\d+\]|'                       # \C[n] - color (uppercase)
     r'\\i\[\d+\]|'                       # \i[n] - icon
@@ -98,7 +98,11 @@ _RPGM_CODE_PATTERNS = (
     r'\\[Pp][Oo][Pp]\[[^\]]*\]|'        # \pop[...] - popup
     r'\\[Ww][Oo][Rr][Dd][Ww][Rr][Aa][Pp]\[[^\]]*\]|'  # \WordWrap[...]
     r'\\msghnd|'                         # \msghnd
-    r'\\[{}.<>!gG$\\nip^;|]|'            # Simple escapes (incl. \G currency, \| wait)
+    r'\\[A-Za-z]{1,3}\d{0,2}[+\-]?(?![A-Za-z0-9_\[])|'  # WOLF bare codes: \E \A+ \N \wE \cE
+    r'\\[-+]|'                           # \- \+ bare operators
+                                         # ASCII-only lookahead: \w matches CJK,
+                                         # so \A+勇者 lost its + to backtracking.
+    r'\\[{}.<>!gG$\\nNip^;|]|'           # Simple escapes (incl. \G currency, \| wait, \N)
     r'\b(?:if|en|req|cond|eval)\s*\((?:[^()\n]|\([^()\n]*\))+\)|'  # Choice condition plugins: if(s[1]), en(v[2]>=10)
     r'\b[vsVS]\[\d+\]|'                 # Variable/switch references: v[2], s[10]
     r'</?[a-zA-Z][a-zA-Z0-9_\s:-]*>|'    # XML/plugin tags: <WordWrap>, <ChoiceHelp>, <page condition>

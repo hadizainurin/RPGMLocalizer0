@@ -51,7 +51,7 @@ _TSS_SCRUB_RE = re.compile(
 _PROTECT_PATTERN_STR = (
     r'(\[\[.*?\]\]|'                     # [[escaped]]
     r'\{\{.*?\}\}|'                      # {{escaped}}
-    r'\\(?:[cCiIpPfFwWvVnNoOaAhHxXyY]|fs|fn|oc|ow|hc|ac|px|py|wc|tt|bg|cself|sself|self|cdb|udb|sdb|space|sysS|syss|sys|r)\[(?:[^\[\]]*|\[[^\[\]]*\])*\]|'  # Nested brackets like \C[\V[1]], \cself[66], \self[1], \cdb[0:1:0], \sys[10]
+    r'\\[A-Za-z]{1,8}\d{0,2}\s*\[(?:[^\[\]]*|\[[^\[\]]*\])*\]|'  # \c[00] \cself[66] \wE[03] \v1[035] \font [1]
     r'\\c\[\d+\]|'                       # \c[n] - color
     r'\\C\[\d+\]|'                       # \C[n] - color (uppercase)
     r'\\i\[\d+\]|'                       # \i[n] - icon
@@ -83,7 +83,11 @@ _PROTECT_PATTERN_STR = (
     r'\\[Pp][Oo][Pp]\[[^\]]*\]|'        # \pop[...] - popup
     r'\\[Ww][Oo][Rr][Dd][Ww][Rr][Aa][Pp]\[[^\]]*\]|'  # \WordWrap[...]
     r'\\msghnd|'                         # \msghnd
-    r'\\[{}.<>!gG$\\nip^;|]|'            # Simple escapes (incl. \G currency, \| wait)
+    r'\\[A-Za-z]{1,3}\d{0,2}[+\-]?(?![A-Za-z0-9_\[])|'  # WOLF bare codes: \E \A+ \N \wE \cE
+    r'\\[-+]|'                           # \- \+ bare operators
+                                         # ASCII-only lookahead: \w matches CJK,
+                                         # so \A+勇者 lost its + to backtracking.
+    r'\\[{}.<>!gG$\\nNip^;|]|'           # Simple escapes (incl. \G currency, \| wait, \N)
     r'\b(?:if|en|req|cond|eval)\s*\((?:[^()\n]|\([^()\n]*\))+\)|'  # Choice condition plugins: if(s[1]), en(v[2]>=10)
     r'\b[vsVS]\[\d+\]|'                 # Variable/switch references: v[2], s[10]
     r'</?[a-zA-Z][a-zA-Z0-9_\s:-]*>|'    # XML/plugin tags: <WordWrap>, <ChoiceHelp>, <page condition>
@@ -286,3 +290,31 @@ def _find_word_boundary(text: str, pos: int) -> int:
                 if text[candidate - 1] == " " or text[candidate] == " ":
                     return candidate
     return pos
+
+#: Characters that constitute actual language: CJK (incl. kana), Hangul, and
+#: Cyrillic/Greek/Latin letters.
+_LANGUAGE_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    r"\uac00-\ud7af\u0400-\u04ff\u0370-\u03ff]|[A-Za-z]{2,}"
+)
+
+#: Leftovers that look like a control code the mask did not recognise.
+_CODE_REMNANT_RE = re.compile(r"\\[A-Za-z]+\+?|\[[^\[\]]*\]|[\\|+<>^$]")
+
+
+def has_translatable_content(text: str) -> bool:
+    """True when a line contains language a translator could act on.
+
+    A WOLF line such as ``\\E\\c[00]\\f[24]\\A+\\s[000]\\N`` is pure control
+    codes. Sending one to a model produces reordered, corrupted codes that
+    render as garbage in-game, and the request buys nothing. The segmenter masks
+    every code it knows, but games keep inventing new ones, so this is a
+    backstop: after masking and stripping anything code-shaped, is any actual
+    language left?
+    """
+    if not text or not text.strip():
+        return False
+    clean, _segments = clean_text(text)
+    residue = clean.replace(TEXT_SEGMENT_SEPARATOR, " ")
+    residue = _CODE_REMNANT_RE.sub(" ", residue)
+    return bool(_LANGUAGE_RE.search(residue))

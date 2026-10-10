@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -407,7 +408,9 @@ class AutoTranslateWorker(QThread):
         import asyncio
         from src.core.translator import create_translator
         from src.core.translators.base import TranslationRequest
-        from src.core.text_segmenter import SegmentType, clean_text, reassemble
+        from src.core.text_segmenter import (
+            SegmentType, clean_text, has_translatable_content, reassemble,
+        )
         from src.core.text_merger import TextMerger
         from src.core.glossary import Glossary
         from src.core.translation_quality import translation_issues
@@ -450,6 +453,23 @@ class AutoTranslateWorker(QThread):
         cache_hits = 0
         memo_hits = 0
         flagged_count = 0
+        glossary_hits = 0
+        skipped_by_rule = 0
+        code_only_count = 0
+
+        # Rules that answer a line without a model request. Both match against
+        # the raw original, which is what the editor shows, so a pattern written
+        # against the Original column behaves as the user expects.
+        skip_patterns: list[re.Pattern] = []
+        for raw in str(self.settings.get("skip_regex", "") or "").splitlines():
+            pattern = raw.strip()
+            if not pattern:
+                continue
+            try:
+                skip_patterns.append(re.compile(pattern))
+            except re.error as exc:
+                self.logger.warning("Ignoring invalid skip pattern %r: %s", pattern, exc)
+        glossary_autofill = bool(self.settings.get("glossary_autofill", True))
 
         translation_cache = None
         if self.settings.get("use_cache", True):
@@ -556,14 +576,33 @@ class AutoTranslateWorker(QThread):
 
                 for entry in batch:
                     orig: str = entry["original_text"]
+
+                    # Never send this line anywhere: no request, no cost.
+                    if skip_patterns and any(p.search(orig) for p in skip_patterns):
+                        skipped_by_rule += 1
+                        continue
+
+                    # A line that IS a glossary term is answered from the
+                    # glossary outright. Short fixed strings - item names, menu
+                    # labels, yes/no - are the bulk of a project and the worst
+                    # value per token. The glossary value is final text, so it
+                    # goes straight to the write queue with no protect/restore
+                    # round trip to undo.
+                    if glossary_autofill and glossary:
+                        direct = glossary.lookup_exact(orig)
+                        if direct and direct != orig:
+                            glossary_hits += 1
+                            pairs.append((entry["id"], direct))
+                            continue
+
                     protected, term_map = glossary.protect_terms(orig) if glossary else (orig, {})
                     clean, segs = clean_text(protected)
-                    has_translatable_text = any(
-                        any(c.isalnum() for c in s.content)
-                        for s in segs if s.type == SegmentType.TEXT
-                    )
-                    if not has_translatable_text:
-                        # Code-only or pure punctuation string – nothing to translate, leave untouched
+                    # isalnum() was too weak: an unmasked control code such as
+                    # \E or \A+ is alphanumeric, so pure-code lines were sent to
+                    # the engine, came back with the codes reordered, and
+                    # rendered as garbage in-game. Require real language.
+                    if not has_translatable_content(orig):
+                        code_only_count += 1
                         continue
 
                     segments_by_id[entry["id"]] = segs
@@ -692,12 +731,13 @@ class AutoTranslateWorker(QThread):
                     translation_cache.save()
                 except Exception as save_exc:
                     self.logger.warning("Could not persist translation cache: %s", save_exc)
-            reused = memo_hits + cache_hits
-            if reused:
+            reused = memo_hits + cache_hits + glossary_hits
+            if reused or skipped_by_rule:
                 self.logger.info(
-                    "Auto-translate reused %d strings without a request "
-                    "(%d repeats within this run, %d from the cache).",
-                    reused, memo_hits, cache_hits,
+                    "Auto-translate answered %d strings without a request "
+                    "(%d repeats, %d cached, %d from the glossary) and skipped "
+                    "%d by pattern.",
+                    reused, memo_hits, cache_hits, glossary_hits, skipped_by_rule,
                 )
 
         if self._cancel:
@@ -707,6 +747,12 @@ class AutoTranslateWorker(QThread):
             )
         else:
             message = f"Done! {translated_count} strings translated successfully."
+            if glossary_hits:
+                message += f" {glossary_hits} from the glossary."
+            if code_only_count:
+                message += f" {code_only_count} were control codes only."
+            if skipped_by_rule:
+                message += f" {skipped_by_rule} skipped by pattern."
             if flagged_count:
                 message += (
                     f" {flagged_count} need review - see the Warnings filter."

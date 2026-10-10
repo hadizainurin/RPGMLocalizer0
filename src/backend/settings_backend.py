@@ -43,6 +43,12 @@ class SettingsBackend(QObject):
             # "<game folder>/rpgm_translations.json", so it travels with the game.
             "sidecar_path": "",
             "regex_blacklist": "",
+            # Lines matching any of these patterns are never sent to a translation
+            # engine (one regex per line). Use for credits, file stems, debug text.
+            "skip_regex": "",
+            # A line that exactly matches a glossary term is answered from the
+            # glossary instead of costing a model request.
+            "glossary_autofill": True,
             "batch_size": 15,
             "concurrent_requests": 8,
             "progress_throttle_ms": 250,
@@ -442,6 +448,22 @@ class SettingsBackend(QObject):
     @localLlmMaxTokens.setter
     def localLlmMaxTokens(self, val: int) -> None:
         self._set("local_llm_max_tokens", max(0, int(val)))
+
+    @pyqtProperty(str, notify=settingsChanged)
+    def skipRegex(self) -> str:
+        return str(self._get("skip_regex", ""))
+
+    @skipRegex.setter
+    def skipRegex(self, val: str) -> None:
+        self._set("skip_regex", val)
+
+    @pyqtProperty(bool, notify=settingsChanged)
+    def glossaryAutofill(self) -> bool:
+        return bool(self._get("glossary_autofill", True))
+
+    @glossaryAutofill.setter
+    def glossaryAutofill(self, val: bool) -> None:
+        self._set("glossary_autofill", bool(val))
 
     @pyqtProperty(str, notify=settingsChanged)
     def sidecarPath(self) -> str:

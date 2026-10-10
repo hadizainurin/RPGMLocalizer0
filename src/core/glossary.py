@@ -202,6 +202,28 @@ class Glossary:
                 return val['translation']
         return term
     
+    def lookup_exact(self, text: str) -> Optional[str]:
+        """Translation for a line that IS a glossary term, else None.
+
+        Used to answer short, fixed strings - item names, menu labels, yes/no -
+        from the glossary instead of paying a model request for them. Only a
+        whole-line match counts; partial matches still go through
+        protect_terms so the surrounding sentence is translated normally.
+        """
+        if not text or not self.terms:
+            return None
+        key = text.strip()
+        if not key:
+            return None
+        if self.case_sensitive:
+            data = self.terms.get(key)
+            return data["translation"] if data else None
+        key_lower = key.lower()
+        for term, data in self.terms.items():
+            if term.lower() == key_lower:
+                return data["translation"]
+        return None
+
     def apply_to_text(self, text: str) -> str:
         """
         Directly apply glossary translations to text.

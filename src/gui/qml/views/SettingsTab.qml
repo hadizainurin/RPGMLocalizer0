@@ -388,6 +388,31 @@ Item {
                             font.pixelSize: 11
                             color: t ? t.textMuted : "#55556a"
                         }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
+
+                        ToggleRow {
+                            label: localeManager.strings.settings.glossary_autofill_label
+                            desc: localeManager.strings.settings.glossary_autofill_desc
+                            checked: settingsBackend.glossaryAutofill
+                            onToggled: (val) => { settingsBackend.glossaryAutofill = val }
+                        }
+
+                        PromptField {
+                            label: localeManager.strings.settings.skip_regex_label
+                            text: settingsBackend.skipRegex
+                            placeholder: localeManager.strings.settings.skip_regex_placeholder
+                            minHeight: 110
+                            onEditingFinished: (newText) => { settingsBackend.skipRegex = newText }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: localeManager.strings.settings.skip_regex_desc
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
+
                         Text {
                             Layout.fillWidth: true
                             text: localeManager.strings.settings.throughput_hint

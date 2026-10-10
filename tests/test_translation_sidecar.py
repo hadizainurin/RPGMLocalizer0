@@ -104,3 +104,66 @@ class ImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SlotRegistrationTests(unittest.TestCase):
+    """A QML button can only call a slot Qt actually registered.
+
+    Returning a plain dict from an undecorated method, or a result type QML
+    cannot marshal, makes the button look dead with no error anywhere.
+    """
+
+    def test_slots_are_registered_with_the_expected_signatures(self) -> None:
+        from src.backend.editor_backend import EditorBackend
+        mo = EditorBackend.staticMetaObject
+        sigs = {mo.method(i).methodSignature().data().decode()
+                for i in range(mo.methodCount())}
+        self.assertIn("exportTranslations(QString,bool)", sigs)
+        self.assertIn("importTranslations(QString,bool)", sigs)
+        self.assertIn("defaultSidecarPath()", sigs)
+
+    def test_results_are_qml_readable_dicts(self) -> None:
+        import os, tempfile, logging
+        from unittest.mock import MagicMock
+        from src.backend.editor_backend import EditorBackend
+
+        d = tempfile.mkdtemp()
+        be = EditorBackend.__new__(EditorBackend)
+        be.logger = logging.getLogger("t")
+        be._store = _store()
+        ids = [r["id"] for r in be._store.query_page(page_size=10)[0]]
+        be._store.bulk_apply_auto_translations([(ids[0], "Aa")])
+        be.settings_backend = MagicMock()
+        be.settings_backend.get_dict.return_value = {"source_lang": "ja", "target_lang": "en"}
+        be.app_backend = MagicMock()
+        be.app_backend.projectPath = d
+        be._refresh_page = lambda: None
+        be._refresh_stats = lambda: None
+        be.hasUnsavedChangesChanged = MagicMock()
+
+        res = EditorBackend.exportTranslations(be, "", True)
+        for key in ("ok", "message", "count"):
+            self.assertIn(key, res, f"QML reads res.{key}")
+        self.assertTrue(res["ok"])
+        self.assertTrue(os.path.isfile(res["path"]))
+
+        res2 = EditorBackend.importTranslations(be, res["path"], True)
+        for key in ("ok", "message", "count"):
+            self.assertIn(key, res2)
+        be._store.close()
+
+    def test_missing_file_returns_a_message_not_an_exception(self) -> None:
+        import logging
+        from unittest.mock import MagicMock
+        from src.backend.editor_backend import EditorBackend
+        be = EditorBackend.__new__(EditorBackend)
+        be.logger = logging.getLogger("t")
+        be._store = _store()
+        be.settings_backend = MagicMock()
+        be.settings_backend.get_dict.return_value = {}
+        be.app_backend = MagicMock()
+        be.app_backend.projectPath = "/nope/not/here"
+        res = EditorBackend.importTranslations(be, "", False)
+        self.assertFalse(res["ok"])
+        self.assertIn("No translation file", res["message"])
+        be._store.close()

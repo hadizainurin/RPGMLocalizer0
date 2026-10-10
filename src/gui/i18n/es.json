@@ -67,7 +67,12 @@
     "max_tokens_label": "Max Output Tokens",
     "max_tokens_auto_hint": "0 = no limit; the server decides when to stop. Recommended - a client-side cap truncates long batches and forces retries.",
     "max_tokens_manual_hint": "Fixed cap sent to the server. Too low truncates a merged batch, which fails to parse and costs more in retries than it saves.",
-    "throughput_hint": "Batch Size and Concurrent Requests apply to the Google and Hy-MT2 engines. For a local LLM, throughput is governed by your server - use llama.cpp's --parallel, -ngl and quantization settings."
+    "throughput_hint": "Batch Size and Concurrent Requests apply to the Google and Hy-MT2 engines. For a local LLM, throughput is governed by your server - use llama.cpp's --parallel, -ngl and quantization settings.",
+    "glossary_autofill_label": "Answer glossary terms without the engine",
+    "glossary_autofill_desc": "A line that exactly matches a glossary term is filled from the glossary instead of being sent to the translator. Faster, and the term is always rendered the same way.",
+    "skip_regex_label": "Never translate lines matching (one regex per line)",
+    "skip_regex_placeholder": "^DEBUG_\n^[A-Z0-9_]+$\n^\\\\d+$",
+    "skip_regex_desc": "Matched against the Original Text column. Those lines are never sent anywhere, so they cost nothing. An invalid pattern is ignored and noted in the Console."
   },
   "about": {
     "tagline": "Motor de localización autónomo",
