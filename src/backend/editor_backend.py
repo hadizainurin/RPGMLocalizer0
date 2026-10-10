@@ -361,6 +361,77 @@ class ScanWorker(QThread):
 
 
 
+class TranslationProgress:
+    """Progress line for an auto-translate run.
+
+    The old status mixed two formats and one bad rate: speed was rows done /
+    total elapsed, and rows answered instantly (cache, repeats, skips) count as
+    done, so a page of cache hits read "10384 strings/s"; then nothing updated
+    while a local model spent minutes on one request; then the rate collapsed
+    to 0.5/s and the time-left vanished. Now:
+    - the rate counts only lines the engine translated, over engine time;
+    - time left = remaining rows x share that needed the engine / that rate;
+    - one format throughout, and a heartbeat while a request is in flight.
+    """
+
+    def __init__(self, total: int, clock=time.monotonic) -> None:
+        self.total = max(int(total), 0)
+        self.clock = clock
+        self.done = 0            # rows finished, by any route
+        self.engine_lines = 0    # rows the engine translated
+        self.engine_seconds = 0.0
+        self._request_started: Optional[float] = None
+        self._request_lines = 0
+
+    def rate(self) -> Optional[float]:
+        if self.engine_lines <= 0 or self.engine_seconds <= 0:
+            return None
+        return self.engine_lines / self.engine_seconds
+
+    def seconds_left(self) -> Optional[float]:
+        rate = self.rate()
+        if rate is None or self.done <= 0:
+            return None
+        engine_share = self.engine_lines / self.done
+        return max(0, self.total - self.done) * engine_share / rate
+
+    def start_request(self, lines: int) -> None:
+        self._request_started = self.clock()
+        self._request_lines = lines
+
+    def end_request(self, lines_translated: int) -> None:
+        if self._request_started is not None:
+            self.engine_seconds += max(self.clock() - self._request_started, 0.0)
+        self.engine_lines += max(int(lines_translated), 0)
+        self._request_started = None
+
+    def percent(self) -> int:
+        return min(100, int(self.done * 100 / self.total)) if self.total else 100
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        seconds = int(round(seconds))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes}m"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
+
+    def message(self) -> str:
+        parts = [f"{self.done}/{self.total}"]
+        rate = self.rate()
+        if rate is not None:
+            parts.append(f"{rate:.1f} lines/s" if rate >= 1 else f"{60 * rate:.0f} lines/min")
+        if self._request_started is not None:
+            waited = self.clock() - self._request_started
+            parts.append(f"translating {self._request_lines} lines… {self._fmt_duration(waited)}")
+        left = self.seconds_left()
+        parts.append(f"~{self._fmt_duration(left)} left" if left is not None else "estimating time left…")
+        return " · ".join(parts)
+
+
 class AutoTranslateWorker(QThread):
     """Background worker that auto-translates untranslated editor entries.
 
@@ -405,7 +476,7 @@ class AutoTranslateWorker(QThread):
         """Request cancellation. Any request in flight is aborted, not awaited."""
         self._cancel = True
 
-    def _run_cancellable(self, loop, coro):
+    def _run_cancellable(self, loop, coro, heartbeat=None):
         """Await `coro`, abandoning it promptly if cancel() is called.
 
         A page of 100 lines is a single request that can take minutes on a local
@@ -417,7 +488,16 @@ class AutoTranslateWorker(QThread):
 
         async def runner():
             task = asyncio.ensure_future(coro)
+            last_beat = time.monotonic()
             while not task.done():
+                # A local model can spend minutes on one request; keep the
+                # status line alive instead of frozen.
+                if heartbeat is not None and time.monotonic() - last_beat >= 1.0:
+                    last_beat = time.monotonic()
+                    try:
+                        heartbeat()
+                    except Exception:
+                        pass
                 if self._cancel:
                     task.cancel()
                     try:
@@ -563,6 +643,10 @@ class AutoTranslateWorker(QThread):
             if isinstance(translator, HyMT2Translator):
                 loop.run_until_complete(translator.verify_connection())
             started_at = time.monotonic()
+            meter = TranslationProgress(total_untranslated)
+
+            def emit_progress() -> None:
+                self.progress.emit(meter.percent(), 100, meter.message())
             while not self._cancel:
                 batch = self.store.get_untranslated_batch(
                     last_id=last_id,
@@ -750,21 +834,21 @@ class AutoTranslateWorker(QThread):
 
                 merged_requests = merger.get_requests()
                 if merged_requests:
+                    # Rows this page answered without the engine count as done now.
+                    engine_rows = sum(
+                        len(r.get("metadata", {}).get("original_entries", [])) or 1
+                        for r in merged_requests
+                    )
+                    meter.done = min(total_untranslated, completed + len(batch) - engine_rows)
                     batch_progress = 0
 
                     def on_item_done(count: int = 1) -> None:
                         nonlocal batch_progress
                         batch_progress += count
-                        current = min(total_untranslated, completed + batch_progress)
-                        elapsed = max(time.monotonic() - started_at, 0.001)
-                        speed = current / elapsed
-                        eta = int((total_untranslated - current) / speed) if speed > 0 else 0
-                        minutes, seconds = divmod(eta, 60)
-                        pct = min(100, int(current / total_untranslated * 100))
-                        self.progress.emit(
-                            pct, 100,
-                            f"{current}/{total_untranslated} · {speed:.1f} strings/s · {minutes}m {seconds}s left",
-                        )
+                        emit_progress()
+
+                    meter.start_request(engine_rows)
+                    emit_progress()
 
                     req_objs = [
                         TranslationRequest(
@@ -777,7 +861,9 @@ class AutoTranslateWorker(QThread):
                     results = self._run_cancellable(
                         loop,
                         translator.translate_batch(req_objs, progress_callback=on_item_done),
+                        heartbeat=emit_progress,
                     )
+                    meter.end_request(engine_rows if results is not None else 0)
                     if results is None:
                         _flush_pairs()
                         break
@@ -818,9 +904,13 @@ class AutoTranslateWorker(QThread):
                         )
                         for eid in retry_ids if eid in clean_by_id
                     ]
+                    # Retries cost engine time without adding new lines, so the
+                    # rate (and time left) reflects them honestly.
+                    meter.start_request(len(retry_reqs))
                     retry_results = self._run_cancellable(
-                        loop, translator.translate_batch(retry_reqs)
+                        loop, translator.translate_batch(retry_reqs), heartbeat=emit_progress
                     )
+                    meter.end_request(0)
                     if retry_results is None:
                         _flush_pairs()
                         break
@@ -831,11 +921,8 @@ class AutoTranslateWorker(QThread):
                 _flush_pairs()
 
                 completed += len(batch)
-                pct = min(100, int(completed / max(total_untranslated, 1) * 100))
-                self.progress.emit(
-                    pct, 100,
-                    f"{completed}/{total_untranslated} · {completed / max(time.monotonic() - started_at, 0.001):.1f} strings/s",
-                )
+                meter.done = min(total_untranslated, completed)
+                emit_progress()
 
         except Exception as exc:
             self.finished.emit(translated_count, f"Auto-translation error: {exc}")
