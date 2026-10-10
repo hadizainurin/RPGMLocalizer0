@@ -256,7 +256,19 @@ class BackupManager:
                                 if norm_path not in seen:
                                     seen.add(norm_path)
                                     disk_backups.append((entry.path, entry.stat().st_mtime))
-                    disk_backups.sort(key=lambda x: x[1])
+                    # Oldest first - the first backup is treated as the vanilla
+                    # file. Order by the timestamp in the backup's own name
+                    # (Name_YYYYMMDD_HHMMSS.ext): file dates are copied from the
+                    # original by copy2 and are reset by many copy tools, so a
+                    # copied game folder could pick a translated backup as
+                    # "original". The file date is only the fallback.
+                    import re as _re
+
+                    def _backup_order(item):
+                        m = _re.search(r"_(\d{8})_(\d{6})" + _re.escape(ext) + r"$", os.path.basename(item[0]))
+                        return (0, m.group(1) + m.group(2), item[1]) if m else (1, "", item[1])
+
+                    disk_backups.sort(key=_backup_order)
                     for bp, _ in disk_backups:
                         backups.append(bp)
                 except Exception as exc:

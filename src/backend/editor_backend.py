@@ -338,7 +338,13 @@ class ScanWorker(QThread):
                     self.logger.warning("Could not persist translation cache: %s", save_exc)
 
             self.progress.emit(100, 100, "Done!")
-            self.finished.emit(True, f"{total_loaded} strings loaded successfully.", total_loaded)
+            message = f"{total_loaded} strings loaded successfully."
+            reverted = getattr(self.store, "last_load_reverted", 0)
+            if reverted:
+                message += (f" {reverted} machine translations with damaged game codes "
+                            "were reset to the original - press Save to repair the game files.")
+                self.logger.info("Reset %d damaged machine translations on load.", reverted)
+            self.finished.emit(True, message, total_loaded)
         except Exception as exc:
             self.finished.emit(False, f"Scan error: {exc}", 0)
 

@@ -251,3 +251,78 @@ class ScanFillIsSavedTests(unittest.TestCase):
         store.close()
         self.assertEqual(stats["translated"], 1)
         self.assertEqual(stats["unsaved"], 0)
+
+
+class DamagedTranslationsAreResetOnLoadTests(unittest.TestCase):
+    """A damaged machine translation used to come back on every load: from the
+    game file (an earlier save) or from this database (an unsaved row)."""
+
+    BROKEN = "<GET_SOUNDTIME> < \\cself[07]"
+    ORIG = "<<GET_SOUNDTIME>>Data/\\cself[07]"
+
+    def test_damage_in_the_game_file_is_reset_and_marked_for_save(self):
+        store = EditorStore(":memory:")
+        store.load_entries({"CommonEvent.dat": [("p0", self.BROKEN, "message")]},
+                           backup_files={"CommonEvent.dat": {"p0": self.ORIG}})
+        row = store.query_page(page_size=10)[0][0]
+        changes, _ = store.get_modified_entries()
+        reverted = store.last_load_reverted
+        store.close()
+        self.assertEqual(row["translated_text"], self.ORIG)
+        self.assertEqual(changes["CommonEvent.dat"], {"p0": self.ORIG})
+        self.assertEqual(reverted, 1)
+
+    def test_unsaved_damaged_row_is_not_carried_forward(self):
+        store = EditorStore(":memory:")
+        orig = "\\c[2]\\f[24]\\A+宣言してやらぁ…！"
+        files = {"Map001.json": [("p0", orig, "dialogue")]}
+        store.load_entries(files)
+        eid = store.query_page(page_size=10)[0][0]["id"]
+        store.bulk_apply_auto_translations([(eid, "\\c[2]\\f[24]I'll declare it…!")])
+        store.load_entries(files)  # rescan / reopen
+        row = store.query_page(page_size=10)[0][0]
+        stats = store.get_stats()
+        store.close()
+        self.assertEqual(row["translated_text"], orig)
+        self.assertEqual(stats["unsaved"], 0)
+
+    def test_hand_edits_are_kept(self):
+        store = EditorStore(":memory:")
+        orig = "\\c[2]\\A+はい"
+        files = {"Map001.json": [("p0", orig, "dialogue")]}
+        store.load_entries(files)
+        eid = store.query_page(page_size=10)[0][0]["id"]
+        store.update_entry(eid, "Yes")  # the user's own choice
+        store.load_entries(files)
+        row = store.query_page(page_size=10)[0][0]
+        store.close()
+        self.assertEqual(row["translated_text"], "Yes")
+
+    def test_good_translations_are_untouched(self):
+        store = EditorStore(":memory:")
+        store.load_entries({"CommonEvent.dat": [("p0", "\\c[2]\\A+Yes", "message")]},
+                           backup_files={"CommonEvent.dat": {"p0": "\\c[2]\\A+はい"}})
+        row = store.query_page(page_size=10)[0][0]
+        stats = store.get_stats()
+        store.close()
+        self.assertEqual(row["translated_text"], "\\c[2]\\A+Yes")
+        self.assertEqual(stats["unsaved"], 0)
+
+
+class BackupOrderTests(unittest.TestCase):
+    def test_oldest_backup_by_name_not_file_date(self):
+        import tempfile, time
+        from src.utils.backup import BackupManager
+        with tempfile.TemporaryDirectory() as tmp:
+            game = os.path.join(tmp, "CommonEvent.dat")
+            open(game, "wb").close()
+            bak = os.path.join(tmp, ".rpgm_backup")
+            os.makedirs(bak)
+            newer = os.path.join(bak, "CommonEvent_20261010_201752.dat")
+            older = os.path.join(bak, "CommonEvent_20261010_003853.dat")
+            open(newer, "wb").close()
+            open(older, "wb").close()
+            # A copy tool reset the dates: the newer backup now looks older.
+            os.utime(newer, (1000, 1000))
+            os.utime(older, (time.time(), time.time()))
+            self.assertEqual(BackupManager().get_backups_for_file(game)[0], older)

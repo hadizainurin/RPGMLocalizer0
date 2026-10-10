@@ -485,6 +485,13 @@ Item {
             }
         }
         function onScanFinished(success, message, count) {
+            // A successful load can still have reset damaged translations;
+            // say so, or the user wonders why rows went back to Japanese.
+            if (success && message && message.indexOf("reset to the original") !== -1) {
+                if (typeof toast !== "undefined")
+                    toast.show("warning", localeManager.strings.editor.toast_title_generic, message)
+                return
+            }
             if (!success && message) {
                 if (typeof toast !== "undefined") {
                     toast.show("warning", localeManager.strings.editor.toast_title_generic, message)

@@ -341,6 +341,7 @@ class EditorStore:
 
             records: list[tuple] = []
             mtimes: list[tuple] = []
+            reverted_count = 0
 
             for file_path, entries in extracted_files.items():
                 norm_fp = os.path.normcase(os.path.normpath(file_path))
@@ -435,6 +436,25 @@ class EditorStore:
                             # so it counts as machine output.
                             translation_source = "auto"
 
+                    # A machine translation that damages the line's game codes -
+                    # or any change at all to a line that is only codes - is
+                    # dropped on load instead of carried forward. It may sit in
+                    # the game file from an earlier save, or in this database as
+                    # an unsaved row; either way it reappeared on every load.
+                    # The row goes back to the original and, if the file holds
+                    # the damaged text, is marked unsaved so Save repairs it.
+                    # Hand edits are the user's call and are only flagged.
+                    if translation_source and translation_source != "manual":
+                        from src.core.text_segmenter import has_translatable_content
+                        from src.core.translation_quality import breaks_game
+                        if (not has_translatable_content(original_text, source_lang)
+                                or breaks_game(original_text, translated_text)):
+                            file_has_damage = text != original_text
+                            translated_text = original_text
+                            translation_source = ""
+                            is_modified = 1 if file_has_damage else 0
+                            reverted_count += 1
+
                     # Context links for consecutive dialogue lines in the same file
                     prev_ctx = ""
                     next_ctx = ""
@@ -486,6 +506,8 @@ class EditorStore:
             )
             cur.execute("INSERT OR REPLACE INTO store_meta (key, value) VALUES ('version', ?)", (str(STORE_VERSION),))
             self.conn.commit()
+            #: Machine translations dropped on this load for damaging codes.
+            self.last_load_reverted = reverted_count
             return len(records)
 
     def query_page(
