@@ -905,7 +905,13 @@ class AutoTranslateWorker(QThread):
                     ]
                     results = self._run_cancellable(
                         loop, _send(req_objs, on_item_done), heartbeat=emit_progress)
-                    meter.end_request(engine_rows if results is not None else 0)
+                    # Only lines that came back usable count toward the rate: a
+                    # rejected reply costs time and yields nothing.
+                    meter.end_request(sum(
+                        len(req.get("metadata", {}).get("original_entries", [])) or 1
+                        for req, res in zip(merged_requests, results or [])
+                        if res.success and res.translated_text
+                    ))
                     if results is None:
                         _flush_pairs()
                         break

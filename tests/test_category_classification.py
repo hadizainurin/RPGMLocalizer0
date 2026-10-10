@@ -80,6 +80,12 @@ class WolfDatabaseTypeTagTests(unittest.TestCase):
             "敵キャラ個体データ": "actors", "称号リスト": "actors",
             "技能": "items", "敵スキル": "items", "アイテム": "items", "状態設定": "items",
             "システム設定": "system", "属性名の設定": "system",
+            # Real type names from False Myth 2's DataBase.project
+            "★★キャラ番号からの代入": "actors", "パーティメンバー": "actors",
+            "★エネミーデーター": "actors", "エネミーステータス": "actors",
+            "PTメンバー技表": "items", "敵メンバー技表": "items", "★装備品管理": "items",
+            "★敵怒りバフ種類": "items", "★マナ店商品": "items", "★カジノ景品交換": "items",
+            "マップヒント": "system", "チュートリアル管理": "system",
         }
         for type_name, expected in cases.items():
             self.assertEqual(classify_category("DataBase.dat", wolf_db_type_tag(type_name)),

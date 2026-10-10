@@ -65,11 +65,12 @@ WOLF_PATH_PREFIXES: tuple[str, ...] = (
 #: 職業 every name and profile landed in System & Terms and the Characters &
 #: Classes filter was empty. Item words are checked first ("敵スキル" is a skill).
 _WOLF_ITEM_TYPE_WORDS = (
-    "技能", "スキル", "特技", "魔法", "アイテム", "道具", "武器", "防具", "装備", "アクセサリ", "状態",
+    "技能", "スキル", "特技", "技", "魔法", "アイテム", "道具", "武器", "防具", "装備", "アクセサリ",
+    "状態", "バフ", "商品", "景品",
 )
 _WOLF_ACTOR_TYPE_WORDS = (
-    "主人公", "プレイヤー", "仲間", "キャラ", "人物", "職業", "クラス", "称号", "肩書",
-    "敵", "モンスター", "魔物", "ユニット", "NPC", "ＮＰＣ",
+    "主人公", "プレイヤー", "仲間", "パーティ", "メンバー", "キャラ", "人物", "職業", "クラス",
+    "称号", "肩書", "敵", "エネミー", "モンスター", "魔物", "ユニット", "NPC", "ＮＰＣ",
 )
 
 

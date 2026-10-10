@@ -50,9 +50,39 @@ def still_untranslated(translated: str, target_lang: str) -> bool:
     return bool(letters) and len(_CJK_RE.findall(text)) / letters > 0.3
 
 
+_ROMAJI_WORD_RE = re.compile(
+    r"^(?:(?:ky|gy|sh|ch|ts|ny|hy|by|py|my|ry|j|f|[kgsztdnhbpmyrw])?[aeiouāēīōū]|n(?![aeiouy])|"
+    r"(?<=[aeiou])[kgsztdpbcm](?=[kgsztdpbcm]))+$"
+)
+_ROMAJI_PARTICLES = frozenset(
+    "no ni wo wa ga de to mo ka ne yo da desu dayo dakedo kara kedo shi zo sa na naa nai".split()
+)
+
+
+def looks_romanized(original: str, translated: str) -> bool:
+    """True if a 'translation' of Japanese is the Japanese written in romaji.
+
+    Seen in payload logs: "…H-honki ka? Zettai…kurou suru koto ni naru to omou
+    zo…" for 「…ほ、本気か？ 絶対…苦労することになると思うぞ…」. It is Latin
+    text, so the still-Japanese check passed it. English sentences rarely have
+    most words spelled as romaji syllables *and* several Japanese particles.
+    """
+    if not translated or not _CJK_RE.search(original or ""):
+        return False
+    text = _BRACKET_CODE_RE.sub(" ", translated).lower()
+    words = re.findall(r"[a-zāēīōū]+", text)
+    if len(words) < 5:
+        return False
+    romaji = sum(1 for w in words if _ROMAJI_WORD_RE.match(w))
+    particles = sum(1 for w in words if w in _ROMAJI_PARTICLES)
+    return romaji / len(words) >= 0.8 and particles >= 2
+
+
 def safe_to_reuse(original: str, translated: str, target_lang: str) -> bool:
     """Gate for a stored translation that will be written without review."""
-    return not breaks_game(original, translated) and not still_untranslated(translated, target_lang)
+    return (not breaks_game(original, translated)
+            and not still_untranslated(translated, target_lang)
+            and not looks_romanized(original, translated))
 
 
 def is_damaged_translation(original: str, translated: str, source_lang: str, target_lang: str) -> bool:
@@ -68,6 +98,7 @@ def is_damaged_translation(original: str, translated: str, source_lang: str, tar
         not has_translatable_content(original, source_lang)
         or breaks_game(original, translated)
         or still_untranslated(translated, target_lang)
+        or looks_romanized(original, translated)
     )
 
 
@@ -78,6 +109,8 @@ def translation_issues(original: str, translated: str) -> list[str]:
     issues: list[str] = []
     source_codes = Counter(segment.content for segment in segment_text(original) if segment.type == SegmentType.CODE)
     translated_codes = Counter(segment.content for segment in segment_text(translated) if segment.type == SegmentType.CODE)
+    if looks_romanized(original, translated):
+        issues.append("written in romaji, not translated")
     if source_codes != translated_codes:
         issues.append("game codes or tags changed")
     elif original.count("<") != translated.count("<") or original.count(">") != translated.count(">"):

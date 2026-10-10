@@ -374,8 +374,8 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
     def _build_system_prompt(self, target_lang: str, source_lang: str = "auto") -> str:
         return (
             f"You are an expert game localizer. Translate each input string into {target_lang}. "
-            "Return strictly a JSON array with the exact same number of items in identical order. "
-            "Preserve all special format tokens and delimiters."
+            'Reply with one JSON object {"t": [...]} whose array has exactly one translation per '
+            "input string, in the same order. Preserve all special format tokens and delimiters."
         )
 
     async def _translate_clean_texts(
@@ -400,6 +400,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
             ],
             "temperature": 0.2,
         }
+        payload.update(self._payload_extras(len(clean_texts)))
         budget = self._output_token_budget(clean_texts)
         if budget > 0:
             payload["max_tokens"] = budget
@@ -428,12 +429,23 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                                 "(%d chars). Enable payload dumping to inspect it.",
                                 len(content or ""),
                             )
+                    elif resp.status in (400, 422) and "response_format" in payload:
+                        # Server does not support structured output (older
+                        # Ollama/LM Studio): drop it for good and try again.
+                        logger.info("Server rejected response_format (HTTP %d); "
+                                    "continuing without structured output.", resp.status)
+                        self._structured_output_unsupported = True
+                        payload.pop("response_format", None)
                     elif resp.status in (429, 500, 502, 503):
                         await asyncio.sleep((2 ** (attempt - 1)) * 0.5 + random.uniform(0.1, 0.3))
             except Exception:
                 await asyncio.sleep(0.3)
 
         return [None] * len(clean_texts)
+
+    def _payload_extras(self, item_count: int) -> Dict[str, Any]:
+        """Engine-specific request fields. None for hosted APIs."""
+        return {}
 
 
 class DeepSeekTranslator(OpenAICompatibleTranslator):
@@ -539,6 +551,45 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
     ) -> List[Optional[str]]:
         await self._ensure_model()
         return await super()._translate_clean_texts(clean_texts, source_lang, target_lang)
+
+    #: Set when the server rejects response_format; then plain JSON prompting.
+    _structured_output_unsupported = False
+    #: Sampling temperature. 0 = deterministic, which is what translation wants;
+    #: the old hard-coded 0.2 silently overrode llama-server's --temp 0.
+    temperature = 0.0
+
+    def _payload_extras(self, item_count: int) -> Dict[str, Any]:
+        """Constrain the reply to {"t": [exactly item_count strings]}.
+
+        llama.cpp (and LM Studio / recent Ollama) turn a JSON schema into a
+        grammar, so the model cannot emit invalid JSON or the wrong number of
+        items. Payload logs showed ~40% of replies rejected for exactly that -
+        mis-escaped quotes, 23 items for 2 - and every rejection cost 2-3 more
+        requests through split-and-retry.
+        """
+        extras: Dict[str, Any] = {"temperature": self.temperature}
+        if not self._structured_output_unsupported and item_count > 0:
+            extras["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "translations",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "t": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "minItems": item_count,
+                                "maxItems": item_count,
+                            },
+                        },
+                        "required": ["t"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        return extras
 
     @staticmethod
     def _lang_display(code: Optional[str]) -> str:
