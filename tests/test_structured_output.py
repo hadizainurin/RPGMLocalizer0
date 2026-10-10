@@ -97,3 +97,40 @@ class RomajiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunawayGuardTests(unittest.TestCase):
+    def _translator(self, replies):
+        t = LocalLLMTranslator(model="m", base_url="http://localhost:8080/v1")
+        session = _Session(replies)
+
+        async def get_session():
+            return session
+        t._get_session = get_session
+        return t, session
+
+    def test_local_requests_carry_a_generous_cap(self):
+        t, session = self._translator([_ok(["a", "b"])])
+        asyncio.run(t._translate_clean_texts(["あいうえお", "かきくけこ"], "ja", "en"))
+        cap = session.payloads[0]["max_tokens"]
+        self.assertGreaterEqual(cap, 512)
+
+    def test_explicit_cap_wins(self):
+        t, session = self._translator([_ok(["a"])])
+        t.max_tokens_override = 2000
+        asyncio.run(t._translate_clean_texts(["あ"], "ja", "en"))
+        self.assertEqual(session.payloads[0]["max_tokens"], 2000)
+
+    def test_hitting_the_cap_splits_instead_of_resending(self):
+        looped = (200, {"choices": [{"message": {"content": '{"t": ["aaaa'}, "finish_reason": "length"}]})
+        t, session = self._translator([looped, _ok(["A"]), _ok(["B"])])
+        out = asyncio.run(t._translate_with_retry_and_fallback(["あ", "い"], "ja", "en"))
+        self.assertEqual(out, ["A", "B"])
+        self.assertEqual([len(json.loads(p["messages"][1]["content"])) for p in session.payloads], [2, 1, 1])
+
+    def test_a_timeout_is_not_split(self):
+        t, session = self._translator([])
+        async def nothing(*a, **k):
+            return [None, None]
+        t._translate_clean_texts = nothing
+        self.assertIsNone(asyncio.run(t._translate_with_retry_and_fallback(["あ", "い"], "ja", "en")))

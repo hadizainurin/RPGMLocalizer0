@@ -49,6 +49,13 @@ logger = logging.getLogger("LLMServices")
 
 
 
+class _OutputLimitHit(list):
+    """A failed reply that ran into the output cap (as opposed to a timeout).
+
+    Carried on the return value, not on the translator, because parallel
+    requests share one translator instance."""
+
+
 class SegmentBatchTranslator(BaseTranslator):
     """Base class for translators consuming structured text batches with segment protection."""
 
@@ -138,7 +145,7 @@ class SegmentBatchTranslator(BaseTranslator):
             if not half:
                 continue
             result = await self._translate_clean_texts(half, src, tgt)
-            if result and len(result) == len(half):
+            if result and len(result) == len(half) and not isinstance(result, _OutputLimitHit):
                 out.extend(result)
             else:
                 out.extend(await self._split_and_translate(half, src, tgt, depth + 1))
@@ -150,7 +157,8 @@ class SegmentBatchTranslator(BaseTranslator):
         translated_clean: Optional[List[Optional[str]]] = None
         for attempt in range(2):
             translated_clean = await self._translate_clean_texts(clean_batch, src, tgt)
-            if not translated_clean:
+            hit_limit = isinstance(translated_clean, _OutputLimitHit)
+            if not translated_clean or (all(t is None for t in translated_clean) and not hit_limit):
                 # Nothing came back at all: the server timed out or refused.
                 # Splitting would just issue more requests that time out too.
                 logger.warning(
@@ -159,7 +167,10 @@ class SegmentBatchTranslator(BaseTranslator):
                     len(clean_batch),
                 )
                 return None
-            if len(translated_clean) != len(clean_batch):
+            if len(translated_clean) != len(clean_batch) or hit_limit:
+                # Wrong count, or a reply that ran into the output limit:
+                # halve rather than resend the same thing. (A timeout is not
+                # split - more requests would only time out too.)
                 if len(clean_batch) > 1:
                     return await self._split_and_translate(clean_batch, src, tgt)
                 break
@@ -344,9 +355,22 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
     #: -n / n_predict); guessing it from the client was worse than not guessing.
     max_tokens_override: int = 0
 
+    #: Runaway guard used when no explicit cap is set. Deliberately generous -
+    #: the removed auto-cap was 1x source characters and truncated real replies;
+    #: this is 4x plus headroom, far above any real translation (Japanese runs
+    #: ~1-1.5 English tokens per character), but it stops a model that loops
+    #: inside a string. Without it, one looping request generated until the
+    #: context filled (minutes at ~22 tok/s), timed out, and was re-sent.
+    RUNAWAY_TOKENS_PER_CHAR = 4
+    RUNAWAY_TOKENS_FLOOR = 512
+
     def _output_token_budget(self, clean_texts: Sequence[str]) -> int:
         """Return the explicit cap, or 0 to send none."""
         return max(0, int(getattr(self, "max_tokens_override", 0) or 0))
+
+    def _runaway_guard(self, clean_texts: Sequence[str]) -> int:
+        chars = sum(len(t or "") for t in clean_texts)
+        return max(self.RUNAWAY_TOKENS_FLOOR, self.RUNAWAY_TOKENS_PER_CHAR * chars + 64 * len(clean_texts))
 
     def _dump_exchange(self, kind: str, data: Any) -> None:
         """Write the raw request/response to logs when payload dumping is enabled.
@@ -402,6 +426,8 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
         }
         payload.update(self._payload_extras(len(clean_texts)))
         budget = self._output_token_budget(clean_texts)
+        if budget <= 0 and getattr(self, "GUARD_RUNAWAY", False):
+            budget = self._runaway_guard(clean_texts)
         if budget > 0:
             payload["max_tokens"] = budget
         self._dump_exchange("request", payload)
@@ -421,6 +447,15 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
                         if choices:
                             content = choices[0].get("message", {}).get("content", "")
                             self._dump_exchange("response", content)
+                            if choices[0].get("finish_reason") == "length":
+                                # Hit the output cap: the model was looping (or the
+                                # batch was too big). Re-sending the same request
+                                # loops again, so fail it and let the caller split.
+                                logger.warning(
+                                    "Reply for %d lines hit the output limit (%s tokens); "
+                                    "treating it as failed so the batch is split.",
+                                    len(clean_texts), payload.get("max_tokens"))
+                                return _OutputLimitHit([None] * len(clean_texts))
                             parsed = self._parse_translations(content)
                             if parsed is not None:
                                 return parsed
@@ -554,6 +589,8 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
 
     #: Set when the server rejects response_format; then plain JSON prompting.
     _structured_output_unsupported = False
+    #: Local models can loop; always send a generous runaway cap.
+    GUARD_RUNAWAY = True
     #: Sampling temperature. 0 = deterministic, which is what translation wants;
     #: the old hard-coded 0.2 silently overrode llama-server's --temp 0.
     temperature = 0.0

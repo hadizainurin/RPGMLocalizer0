@@ -79,3 +79,20 @@ class ParallelRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PageDedupTests(unittest.TestCase):
+    def test_a_line_repeated_across_a_page_is_sent_once(self):
+        store = EditorStore(":memory:")
+        rows = [(f"p{i}", "ロマーリオ" if i % 10 == 0 else f"台詞{i:02d}です", "actor") for i in range(40)]
+        store.load_entries({"DataBase.dat": rows})
+        fake = _FakeLocal()
+        settings = {"engine": "local_llm", "source_lang": "ja", "target_lang": "en",
+                    "use_cache": False, "batch_size": 12, "local_llm_parallel": 1}
+        with mock.patch("src.core.translator.create_translator", return_value=fake):
+            AutoTranslateWorker(store, settings).run()
+        sent = [t for c in fake.calls for t in c]
+        out = {r["original_text"]: r["translated_text"] for r in store.query_page(page_size=100)[0]}
+        store.close()
+        self.assertEqual(sent.count("ロマーリオ"), 1)
+        self.assertEqual(out["ロマーリオ"], "EN:ロマーリオ")

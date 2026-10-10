@@ -362,46 +362,66 @@ class ScanWorker(QThread):
 
 
 class TranslationProgress:
-    """Progress line for an auto-translate run.
+    """Progress line for an auto-translate run - estimated like a download.
 
-    The old status mixed two formats and one bad rate: speed was rows done /
-    total elapsed, and rows answered instantly (cache, repeats, skips) count as
-    done, so a page of cache hits read "10384 strings/s"; then nothing updated
-    while a local model spent minutes on one request; then the rate collapsed
-    to 0.5/s and the time-left vanished. Now:
-    - the rate counts only lines the engine translated, over engine time;
-    - time left = remaining rows x share that needed the engine / that rate;
-    - one format throughout, and a heartbeat while a request is in flight.
+    A rough time left is shown from the first second, then refined as real
+    timings arrive:
+    - the rate starts from a prior guess (PRIOR_LINES_PER_SEC) worth
+      PRIOR_WEIGHT_LINES lines of evidence, and measured engine work takes over
+      as it accumulates - early on the guess dominates, later the measurement;
+    - time spent waiting on the request in flight counts immediately, so a slow
+      request pushes the estimate up while it is still running instead of the
+      line sitting on "estimating" for minutes;
+    - rows answered without the engine (cache, repeats, skips) count as done but
+      not as engine work, and the share of rows that needed the engine is learnt
+      the same way (prior PRIOR_ENGINE_SHARE).
     """
+
+    PRIOR_LINES_PER_SEC = 0.5     # ~30 lines/min: a mid-range local model
+    PRIOR_WEIGHT_LINES = 12       # ~one request's worth of evidence
+    PRIOR_ENGINE_SHARE = 0.9      # most untranslated rows need the engine
 
     def __init__(self, total: int, clock=time.monotonic) -> None:
         self.total = max(int(total), 0)
         self.clock = clock
         self.done = 0            # rows finished, by any route
-        self.engine_lines = 0    # rows the engine translated
+        self.engine_lines = 0    # rows the engine translated (usable replies)
         self.engine_seconds = 0.0
         self._request_started: Optional[float] = None
         self._request_lines = 0
 
-    def rate(self) -> Optional[float]:
-        if self.engine_lines <= 0 or self.engine_seconds <= 0:
-            return None
-        return self.engine_lines / self.engine_seconds
+    def _waiting(self) -> float:
+        if self._request_started is None:
+            return 0.0
+        return max(self.clock() - self._request_started, 0.0)
 
-    def seconds_left(self) -> Optional[float]:
-        rate = self.rate()
-        if rate is None or self.done <= 0:
-            return None
-        engine_share = self.engine_lines / self.done
-        return max(0, self.total - self.done) * engine_share / rate
+    def rate(self) -> float:
+        """Engine lines per second: prior blended with measurement + live wait."""
+        k = self.PRIOR_WEIGHT_LINES
+        lines = self.engine_lines + k
+        seconds = self.engine_seconds + self._waiting() + k / self.PRIOR_LINES_PER_SEC
+        return lines / seconds
+
+    def measured(self) -> bool:
+        return self.engine_lines >= self.PRIOR_WEIGHT_LINES
+
+    def engine_share(self) -> float:
+        k = 20
+        return (self.engine_lines + k * self.PRIOR_ENGINE_SHARE) / (self.done + k) if self.done or self.engine_lines else self.PRIOR_ENGINE_SHARE
+
+    def seconds_left(self) -> float:
+        remaining = max(0, self.total - self.done)
+        left = remaining * min(1.0, self.engine_share()) / self.rate()
+        # Lines of the request in flight are not in `done` yet; don't count
+        # its elapsed wait twice - it is already in the rate.
+        return max(0.0, left)
 
     def start_request(self, lines: int) -> None:
         self._request_started = self.clock()
         self._request_lines = lines
 
     def end_request(self, lines_translated: int) -> None:
-        if self._request_started is not None:
-            self.engine_seconds += max(self.clock() - self._request_started, 0.0)
+        self.engine_seconds += self._waiting()
         self.engine_lines += max(int(lines_translated), 0)
         self._request_started = None
 
@@ -420,15 +440,17 @@ class TranslationProgress:
         return f"{secs}s"
 
     def message(self) -> str:
-        parts = [f"{self.done}/{self.total}"]
         rate = self.rate()
-        if rate is not None:
-            parts.append(f"{rate:.1f} lines/s" if rate >= 1 else f"{60 * rate:.0f} lines/min")
+        parts = [f"{self.done}/{self.total}"]
+        speed = f"{rate:.1f} lines/s" if rate >= 1 else f"{60 * rate:.0f} lines/min"
+        left = self._fmt_duration(self.seconds_left())
+        if self.measured():
+            parts += [speed, f"~{left} left"]
+        else:
+            # Still mostly the prior: say so, like a download's first seconds.
+            parts += [f"~{speed} (estimating)", f"roughly {left} left"]
         if self._request_started is not None:
-            waited = self.clock() - self._request_started
-            parts.append(f"translating {self._request_lines} lines… {self._fmt_duration(waited)}")
-        left = self.seconds_left()
-        parts.append(f"~{self._fmt_duration(left)} left" if left is not None else "estimating time left…")
+            parts.append(f"waiting on {self._request_lines} lines {self._fmt_duration(self._waiting())}")
         return " · ".join(parts)
 
 
@@ -673,7 +695,16 @@ class AutoTranslateWorker(QThread):
 
             if not json_array_engine or len(reqs) <= lines_per_request:
                 return _padded(reqs, await translator.translate_batch(reqs, progress_callback=progress_cb))
-            groups = [reqs[i:i + lines_per_request] for i in range(0, len(reqs), lines_per_request)]
+            # Send each distinct line once. translate_batch dedupes inside one
+            # call, but a page is now split into several calls, so a name that
+            # recurs across a page (ロマーリオ in 4 database types) was sent 4x.
+            first_of: Dict[str, int] = {}
+            unique = []
+            for r in reqs:
+                if r.text not in first_of:
+                    first_of[r.text] = len(unique)
+                    unique.append(r)
+            groups = [unique[i:i + lines_per_request] for i in range(0, len(unique), lines_per_request)]
             gate = asyncio.Semaphore(parallel_requests)
 
             async def one(group):
@@ -682,7 +713,8 @@ class AutoTranslateWorker(QThread):
                         group, progress_callback=progress_cb))
 
             parts = await asyncio.gather(*(one(g) for g in groups))
-            return [r for part in parts for r in part]
+            flat = [r for part in parts for r in part]
+            return [flat[first_of[r.text]] for r in reqs]
 
         try:
             if isinstance(translator, HyMT2Translator):
