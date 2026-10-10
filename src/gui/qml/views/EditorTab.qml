@@ -389,6 +389,8 @@ Item {
     }
 
     function showNotice(text) {
+        if (typeof appBackend !== "undefined" && appBackend && appBackend.logUserMessage)
+            appBackend.logUserMessage("info", "Translation Editor", text)
         root.singleTranslateNotice = text
         singleTranslateNoticeTimer.restart()
     }

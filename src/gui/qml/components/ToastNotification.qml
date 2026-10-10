@@ -22,6 +22,10 @@ Item {
         message = messageStr || ""
         if (!isDuplicate) {
             showAnim.restart()
+            // Keep a record (logs/message_YYMMDD.log): a toast vanishes after
+            // a few seconds, and users need to look up what it said.
+            if (typeof appBackend !== "undefined" && appBackend && appBackend.logUserMessage)
+                appBackend.logUserMessage(noticeType, title, message)
         }
         autoHideTimer.restart()
     }

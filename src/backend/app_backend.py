@@ -246,6 +246,12 @@ class AppBackend(QObject):
             return file_path
         return ""
 
+    @pyqtSlot(str, str, str)
+    def logUserMessage(self, kind: str, title: str, message: str) -> None:
+        """Record a message shown to the user in logs/message_YYMMDD.log."""
+        from src.utils.message_log import log_message
+        log_message(kind, title, message)
+
     @pyqtSlot(result=str)
     def selectExportFile(self) -> str:
         file_path, _ = QFileDialog.getSaveFileName(

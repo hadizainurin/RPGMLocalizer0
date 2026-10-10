@@ -200,12 +200,16 @@ class TranslationLogTests(unittest.TestCase):
         self.assertIn("speed     = 90.0 lines/min", text)
         self.assertIn("elapsed   = 10m 00s", text)
 
-    def test_unfinished_run_has_no_speed(self):
-        diagnostics.update_run_log({"status": "cancelled", "lines_done": 120, "lines_total": 900,
+    def test_speed_shown_while_running_and_when_cut_short(self):
+        diagnostics.update_run_log({"status": "running", "lines_done": 120, "lines_total": 900,
                                     "lines_per_min": 50.0}, self.dir)
         text = self._text()
         self.assertIn("remaining = 780", text)
-        self.assertIn("speed     = \n", text)
+        self.assertIn("speed     = 50.0 lines/min", text)
+
+    def test_no_speed_before_the_first_reply(self):
+        diagnostics.update_run_log({"status": "running", "lines_done": 0, "lines_total": 900}, self.dir)
+        self.assertIn("speed     = \n", self._text())
 
     def test_abrupt_end_is_marked_interrupted(self):
         diagnostics.start_run_log({"mode": "translate"}, self.dir)
@@ -235,6 +239,31 @@ class TranslationLogTests(unittest.TestCase):
         self.assertIn("status    = finished", text)
         self.assertIn("progress  = 1 / 1", text)
         self.assertTrue((self.dir / "system.log").exists())
+
+
+class MessageLogTests(unittest.TestCase):
+    def test_one_line_per_message_one_file_per_day(self):
+        from src.utils import message_log
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            when = 1_791_651_000
+            message_log.log_message("warning", "Translation Editor",
+                                    "10 machine translations\nwere reset.", d, when=when)
+            message_log.log_message("success", "Save Successful", "2 files saved.", d, when=when + 5)
+            files = list(d.glob("message_*.log"))
+            self.assertEqual(len(files), 1)
+            lines = files[0].read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn("[warning]  Translation Editor: 10 machine translations were reset.", lines[0])
+            self.assertRegex(files[0].name, r"^message_\d{6}\.log$")
+
+    def test_old_days_are_pruned(self):
+        from src.utils import message_log
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(message_log, "MAX_DAYS", 3):
+            d = Path(tmp)
+            for day in range(6):
+                message_log.log_message("info", "", "x", d, when=1_791_651_000 + day * 86400)
+            self.assertEqual(len(list(d.glob("message_*.log"))), 3)
 
 
 if __name__ == "__main__":

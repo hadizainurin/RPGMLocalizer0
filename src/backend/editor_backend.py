@@ -615,8 +615,11 @@ class AutoTranslateWorker(QThread):
             if meter is not None:
                 state["lines_done"] = meter.done
                 state["lines_total"] = meter.total
-                if status == "finished" and meter.elapsed() > 0:
-                    state["lines_per_min"] = 60.0 * meter.engine_lines / max(meter.elapsed(), 1e-6)
+                # Same figure as the status line (engine lines per minute).
+                # Before any reply it is still the starting guess, so leave it
+                # out until a request has actually come back.
+                if meter.engine_lines > 0:
+                    state["lines_per_min"] = 60.0 * meter.rate()
             diagnostics.update_run_log(state)
         except Exception as exc:
             self.logger.debug("Translation log failed: %s", exc)

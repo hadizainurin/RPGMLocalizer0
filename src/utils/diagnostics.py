@@ -218,7 +218,6 @@ def _fmt_seconds(seconds: Optional[float]) -> str:
 
 def render_run(state: Dict[str, Any]) -> str:
     done, total = state.get("lines_done"), state.get("lines_total")
-    finished = state.get("status") == "finished"
     rate = state.get("lines_per_min")
     lines = [
         "RPGM Localizer translation log",
@@ -229,8 +228,8 @@ def render_run(state: Dict[str, Any]) -> str:
         f"progress  = {'' if done is None else done} / {'' if total is None else total}",
         f"remaining = {'' if done is None or total is None else max(0, total - done)}",
         f"elapsed   = {_fmt_seconds(state.get('elapsed_seconds'))}",
-        # Only meaningful for a run that got to the end.
-        f"speed     = {f'{rate:.1f} lines/min' if finished and rate is not None else ''}",
+        # Current speed while running; final speed once the run has ended.
+        f"speed     = {f'{rate:.1f} lines/min' if rate is not None else ''}",
     ]
     if state.get("message"):
         lines.append(f"result    = {state['message']}")
