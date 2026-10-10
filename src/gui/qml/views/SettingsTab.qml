@@ -168,6 +168,9 @@ Item {
         property real from: 0; property real to: 100; property real step: 1
         property real value: 0
         property string unit: ""
+        //: When true the value box is a text field, so a precise number can be
+        //: typed instead of dragged to (large ranges are hard to hit exactly).
+        property bool editable: false
         signal moved(real val)
         spacing: 16; Layout.fillWidth: true
 
@@ -183,7 +186,34 @@ Item {
             Material.theme: Material.Dark; Material.accent: t ? t.accent : "#7c6cf8"
             onMoved: sliderRow.moved(value)
         }
+        TextField {
+            visible: sliderRow.editable
+            implicitWidth: 90; implicitHeight: 32
+            horizontalAlignment: TextInput.AlignHCenter
+            font.pixelSize: 12; font.bold: true
+            color: t ? t.accentLight : "#a89bf9"
+            selectByMouse: true
+            //: Digits only. Not IntValidator: Qt treats an over-range number like
+            //: 999999 as "Intermediate", lets it be typed, and then never emits
+            //: editingFinished for it - so the box showed 999999 while nothing
+            //: was saved. Range is enforced in commit() instead.
+            validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,7}$/ }
+            text: Math.round(sliderRow.value)
+            Material.theme: Material.Dark; Material.accent: t ? t.accent : "#7c6cf8"
+            function commit() {
+                var n = parseInt(text, 10)
+                if (isNaN(n)) n = Math.round(sliderRow.value)
+                n = Math.max(sliderRow.from, Math.min(sliderRow.to, n))
+                sliderRow.moved(n)
+                // Re-bind so the box shows the clamped, saved value and keeps
+                // following the slider afterwards.
+                text = Qt.binding(function() { return Math.round(sliderRow.value) })
+            }
+            onEditingFinished: commit()
+            onActiveFocusChanged: if (!activeFocus) commit()
+        }
         Rectangle {
+            visible: !sliderRow.editable
             implicitWidth: 68; implicitHeight: 28; radius: 6
             color: t ? t.bg4 : "#2a2a3a"
             border.color: t ? t.border2 : "#3d3d55"; border.width: 1
@@ -375,7 +405,8 @@ Item {
                         }
                         StyledSlider {
                             label: localeManager.strings.settings.max_tokens_label
-                            from: 0; to: 8192; step: 256
+                            from: 0; to: 100000; step: 512
+                            editable: true
                             value: settingsBackend.localLlmMaxTokens
                             onMoved: (val) => { settingsBackend.localLlmMaxTokens = Math.round(val) }
                         }

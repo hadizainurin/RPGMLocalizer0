@@ -638,10 +638,14 @@ class WolfMap:
                 header.write(body.getvalue())
             return header.getvalue()
 
-        # WOLF 2.x engines (version < v35) do NOT support UTF-8 containers.
-        # Preserve native CP932 format and transliterate unencodable characters safely.
-        if not self.v35:
-            self.is_utf8 = False
+        # Keep the source file's encoding. Only a file that was CP932 to begin
+        # with is forced back to CP932 (WOLF 2.x cannot read UTF-8). A UTF-8
+        # file must stay UTF-8 even when its version is below v3.5: WOLF 3.x
+        # games ship UTF-8 files with older version bytes, and downgrading
+        # one file while the rest of the game stays UTF-8 breaks every
+        # name-based lookup between them (e.g. a DB field name in a common
+        # event no longer matches the field name in the database).
+        if not self.v35 and not self.is_utf8:
             return _build(is_utf8_flag=False, allow_transliterate=True)
 
         data, upgraded = _build_with_utf8_upgrade(self.is_utf8, lambda flag: _build(flag, allow_transliterate=False))
@@ -831,9 +835,14 @@ class WolfCommonEvents:
                 header.write(body.getvalue())
             return header.getvalue()
 
-        # WOLF 2.x engines do NOT support UTF-8 containers.
-        if not self.v35:
-            self.is_utf8 = False
+        # Keep the source file's encoding. Only a file that was CP932 to begin
+        # with is forced back to CP932 (WOLF 2.x cannot read UTF-8). A UTF-8
+        # file must stay UTF-8 even when its version is below v3.5: WOLF 3.x
+        # games ship UTF-8 files with older version bytes, and downgrading
+        # one file while the rest of the game stays UTF-8 breaks every
+        # name-based lookup between them (e.g. a DB field name in a common
+        # event no longer matches the field name in the database).
+        if not self.v35 and not self.is_utf8:
             return _build(is_utf8_flag=False, allow_transliterate=True)
 
         data, upgraded = _build_with_utf8_upgrade(self.is_utf8, lambda flag: _build(flag, allow_transliterate=False))
@@ -875,6 +884,10 @@ class DbType:
     field_type_list_size: int
     unknown1: int = 0
     unknown2: str = ""
+    #: The .dat's own field index list, kept verbatim. The .dat can list fewer
+    #: fields than the .project names; writing len(self.fields) entries instead
+    #: added phantom columns (8 extra bytes on a stock CDataBase.dat).
+    dat_index_infos: Optional[list] = None
 
     @classmethod
     def read_project(cls, r: ByteReader) -> DbType:
@@ -968,6 +981,7 @@ class DbType:
             self.unknown2 = r.read_string()
         field_count = r.read_int()
         index_infos = [r.read_int() for _ in range(field_count)]
+        self.dat_index_infos = list(index_infos)
         for i, f in enumerate(self.fields[:field_count]):
             f.index_info = index_infos[i]
 
@@ -990,12 +1004,16 @@ class DbType:
         w.write_int(self.unknown1)
         if self.unknown1 == _DAT_STRING_INDICATOR:
             w.write_string(self.unknown2)
-        w.write_int(len(self.fields))
-        for f in self.fields:
-            w.write_int(f.index_info)
+        if self.dat_index_infos is not None:
+            index_infos = list(self.dat_index_infos)
+        else:
+            index_infos = [f.index_info for f in self.fields]
+        w.write_int(len(index_infos))
+        for idx in index_infos:
+            w.write_int(idx)
 
-        int_indices = [f.index_info - 1000 for f in self.fields if 1000 <= f.index_info < 2000]
-        str_indices = [f.index_info - 2000 for f in self.fields if f.index_info >= 2000]
+        int_indices = [idx - 1000 for idx in index_infos if 1000 <= idx < 2000]
+        str_indices = [idx - 2000 for idx in index_infos if idx >= 2000]
         int_count = max(int_indices) + 1 if int_indices else 0
         str_count = max(str_indices) + 1 if str_indices else 0
 
@@ -1026,13 +1044,17 @@ class WolfDatabase:
         dat_path_for_error: object = "memory.dat",
     ) -> WolfDatabase:
         _check_not_encrypted(proj_data, proj_path_for_error)
-        r_proj = ByteReader(proj_data)
-        types = [DbType.read_project(r_proj) for _ in range(r_proj.read_int())]
-
         _check_not_encrypted(dat_data, dat_path_for_error)
         r_dat = ByteReader(dat_data)
         r_dat.read_byte()  # 0x00 indicator
         is_utf8_dat = r_dat.verify_magic_utf8_aware(_DAT_MAGIC_CP932, _DAT_UTF8_INDEX)
+
+        # The .project has no magic of its own; it shares the .dat's encoding.
+        # Reading it as CP932 when it is UTF-8 turns names whose UTF-8 bytes are
+        # also valid CP932 into mojibake (現在値 -> 迴ｾ蝨ｨ蛟､), and the others
+        # silently fall back to UTF-8 - so a later write mixes both encodings.
+        r_proj = ByteReader(proj_data, encoding=UTF8 if is_utf8_dat else CP932)
+        types = [DbType.read_project(r_proj) for _ in range(r_proj.read_int())]
         version = r_dat.read_byte()
         if version == _DAT_V35_VERSION:
             r_dat.unpack_lz4(r_dat.tell())
@@ -1099,9 +1121,14 @@ class WolfDatabase:
                 header.write(body.getvalue())
             return header.getvalue()
 
-        # WOLF 2.x engines do NOT support UTF-8 containers.
-        if not self.v35:
-            self.is_utf8 = False
+        # Keep the source file's encoding. Only a file that was CP932 to begin
+        # with is forced back to CP932 (WOLF 2.x cannot read UTF-8). A UTF-8
+        # file must stay UTF-8 even when its version is below v3.5: WOLF 3.x
+        # games ship UTF-8 files with older version bytes, and downgrading
+        # one file while the rest of the game stays UTF-8 breaks every
+        # name-based lookup between them (e.g. a DB field name in a common
+        # event no longer matches the field name in the database).
+        if not self.v35 and not self.is_utf8:
             return _build_proj(False, allow_transliterate=True), _build_dat(False, allow_transliterate=True)
 
         def _build_both(is_utf8_flag: bool) -> bytes:

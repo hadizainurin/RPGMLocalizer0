@@ -291,6 +291,38 @@ Item {
     property int dragAnchorIndex: -1
     property bool dragSelecting: false
     property bool dragMoved: false
+    //: Last pointer y during a sweep, in stringListView coordinates. The
+    //: edge auto-scroll timer reads it, because a mouse held still past the
+    //: edge sends no move events.
+    property real dragPointY: 0
+    property real dragPointX: 0
+    //: Set by a press that has already applied Ctrl/Shift selection, so the
+    //: matching release does not wipe it.
+    property bool modifierClick: false
+
+    //: Scrolls while the pointer sits above/below the list during a sweep,
+    //: faster the further past the edge it is.
+    Timer {
+        id: dragAutoScroll
+        interval: 16
+        repeat: true
+        running: root.dragSelecting
+        onTriggered: {
+            var y = root.dragPointY
+            var h = stringListView.height
+            var step = 0
+            if (y < 0) step = -Math.min(40, 4 + (-y) / 2)
+            else if (y > h) step = Math.min(40, 4 + (y - h) / 2)
+            if (step === 0) return
+            var maxY = Math.max(0, stringListView.contentHeight - h)
+            stringListView.contentY = Math.max(0, Math.min(maxY, stringListView.contentY + step))
+            var idx = root.rowIndexAt(root.dragPointX, step < 0 ? 1 : h - 1)
+            if (idx >= 0 && root.dragAnchorIndex >= 0) {
+                root.dragMoved = true
+                root.selectIndexRange(root.dragAnchorIndex, idx)
+            }
+        }
+    }
 
     function isRowSelected(entryId) {
         return root.selectedIds.indexOf(entryId) !== -1
@@ -1016,6 +1048,13 @@ Item {
                     //: it restores itself the moment the sweep ends however it ends.
                     interactive: !root.dragSelecting
 
+                    //: Keep every delegate of the page alive (a page is 100 rows).
+                    //: The sweep's MouseArea lives in the row where the press
+                    //: started; if auto-scroll pushed that row out of view, the
+                    //: delegate was destroyed, the grab was lost and the sweep
+                    //: stopped dead partway down.
+                    cacheBuffer: 100000
+
                     ScrollBar.vertical: ScrollBar {
                         policy: ScrollBar.AsNeeded
                     }
@@ -1239,6 +1278,7 @@ Item {
                                     root.toggleSelection(model.entryId)
                                     root.dragAnchorIndex = index
                                     root.dragSelecting = false
+                                    root.modifierClick = true
                                     return
                                 }
                                 if (mouse.modifiers & Qt.ShiftModifier) {
@@ -1246,9 +1286,11 @@ Item {
                                         root.dragAnchorIndex = index
                                     root.selectIndexRange(root.dragAnchorIndex, index)
                                     root.dragSelecting = false
+                                    root.modifierClick = true
                                     return
                                 }
 
+                                root.modifierClick = false
                                 root.dragAnchorIndex = index
                                 root.dragSelecting = true
                                 root.dragMoved = false
@@ -1261,22 +1303,12 @@ Item {
                                 if (!pressed || !root.dragSelecting || root.dragAnchorIndex < 0)
                                     return
                                 var pt = mapToItem(stringListView, mouse.x, mouse.y)
-                                var idx = root.rowIndexAt(pt.x, pt.y)
-
-                                // Past the top or bottom edge: extend to the end and
-                                // keep scrolling, the way a real list view does.
-                                if (idx < 0) {
-                                    if (pt.y < 0) {
-                                        stringListView.contentY = Math.max(
-                                            0, stringListView.contentY - 12)
-                                        idx = root.rowIndexAt(pt.x, 1)
-                                    } else if (pt.y > stringListView.height) {
-                                        stringListView.contentY = Math.min(
-                                            Math.max(0, stringListView.contentHeight - stringListView.height),
-                                            stringListView.contentY + 12)
-                                        idx = root.rowIndexAt(pt.x, stringListView.height - 1)
-                                    }
-                                }
+                                root.dragPointX = Math.max(1, Math.min(stringListView.width - 1, pt.x))
+                                root.dragPointY = pt.y
+                                // Past the edges, dragAutoScroll does the scrolling
+                                // and extending; here just clamp to the edge row.
+                                var cy = Math.max(1, Math.min(stringListView.height - 1, pt.y))
+                                var idx = root.rowIndexAt(root.dragPointX, cy)
                                 if (idx < 0)
                                     return
                                 root.dragMoved = true
@@ -1287,10 +1319,15 @@ Item {
                                 if (mouse.button !== Qt.LeftButton)
                                     return
                                 var swept = root.dragSelecting && root.dragMoved
+                                var modified = root.modifierClick
                                 root.dragSelecting = false
                                 root.dragMoved = false
-                                if (swept)
-                                    return   // keep the swept range
+                                root.modifierClick = false
+                                // A swept range or a Ctrl/Shift click: keep the
+                                // selection. Previously the release after a
+                                // Shift+click fell through to clearSelection().
+                                if (swept || modified)
+                                    return
                                 // A click that never moved: open this row and drop
                                 // the multi-selection.
                                 root.clearSelection()
@@ -1302,6 +1339,7 @@ Item {
                             //: move would carry on extending a selection the user
                             //: already finished.
                             onCanceled: {
+                                root.modifierClick = false
                                 root.dragSelecting = false
                                 root.dragMoved = false
                             }

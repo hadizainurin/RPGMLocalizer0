@@ -68,7 +68,7 @@ class SettingsBackend(QObject):
             "gemini_safety_settings": "BLOCK_NONE",
             "local_llm_url": "http://localhost:8080/v1",
             "local_llm_model": "",
-            "local_llm_max_tokens": 0,  # 0 = size the cap from the input automatically
+            "local_llm_max_tokens": 0,  # 0 = send no max_tokens; the server decides (llama.cpp -n)
             "local_llm_prompt": "",
             "local_llm_prompt_mode": "append",
             "local_llm_debug_dump": False,
@@ -443,11 +443,11 @@ class SettingsBackend(QObject):
 
     @pyqtProperty(int, notify=settingsChanged)
     def localLlmMaxTokens(self) -> int:
-        return max(0, int(self._get("local_llm_max_tokens", 0)))
+        return max(0, min(100000, int(self._get("local_llm_max_tokens", 0))))
 
     @localLlmMaxTokens.setter
     def localLlmMaxTokens(self, val: int) -> None:
-        self._set("local_llm_max_tokens", max(0, int(val)))
+        self._set("local_llm_max_tokens", max(0, min(100000, int(val))))
 
     @pyqtProperty(str, notify=settingsChanged)
     def skipRegex(self) -> str:

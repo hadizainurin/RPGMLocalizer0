@@ -65,7 +65,7 @@
     "provider_select_label": "Provider",
     "section_hy_mt2": "🈸 Hy-MT2 (Local)",
     "max_tokens_label": "Max Output Tokens",
-    "max_tokens_auto_hint": "0 = no limit; the server decides when to stop. Recommended - a client-side cap truncates long batches and forces retries.",
+    "max_tokens_auto_hint": "0 = no limit sent; llama-server uses its own -n / n_predict (default: until the reply ends or the context fills). Recommended. This is a ceiling, not a speed setting.",
     "max_tokens_manual_hint": "Fixed cap sent to the server. Too low truncates a merged batch, which fails to parse and costs more in retries than it saves.",
     "throughput_hint": "Batch Size and Concurrent Requests apply to the Google and Hy-MT2 engines. For a local LLM, throughput is governed by your server - use llama.cpp's --parallel, -ngl and quantization settings.",
     "glossary_autofill_label": "Answer glossary terms without the engine",
