@@ -545,7 +545,18 @@ class AutoTranslateWorker(QThread):
         translator = None if self.cache_only else create_translator(self.settings)
         glossary_path = self.settings.get("glossary_path", "")
         glossary = Glossary(glossary_path) if self.settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path) else None
-        from src.core.translators.services import HyMT2Translator
+        from src.core.translators.services import HyMT2Translator, SegmentBatchTranslator
+        # JSON-array engines (local LLM, OpenAI, DeepSeek, Gemini-compatible)
+        # already batch: one request carries a list of lines. Merging lines
+        # into one item with |||RPGMSEP||| on top of that confused the model -
+        # it split on the separators and returned 23 items for 2, the reply was
+        # rejected as malformed, and split-and-retry spent ~3 requests per batch
+        # for little or nothing. So for them: one line per item, and the worker
+        # sends groups of `batch_size` consecutive lines itself.
+        json_array_engine = isinstance(translator, SegmentBatchTranslator) and not isinstance(
+            translator, HyMT2Translator)
+        lines_per_request = max(1, int(self.settings.get("batch_size", 15) or 15))
+        parallel_requests = max(1, min(8, int(self.settings.get("local_llm_parallel", 1) or 1)))
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -639,6 +650,40 @@ class AutoTranslateWorker(QThread):
             if removed:
                 purged_count += 1
 
+        async def _send(reqs, progress_cb):
+            """Send `reqs`, returning exactly one result per request, in order.
+
+            For JSON-array engines: groups of `lines_per_request` consecutive
+            lines - so the model still sees the surrounding dialogue - run
+            `parallel_requests` at a time (match llama-server's --parallel).
+            Each request is self-contained; nothing is shared between them, so
+            running two at once loses no context a single request had.
+            """
+            from src.core.translators.base import TranslationResult
+
+            def _padded(group, part):
+                part = list(part or [])
+                if len(part) == len(group):
+                    return part
+                # Never let a short reply shift later results onto other lines.
+                return [TranslationResult(original_text=r.text, translated_text="",
+                                          source_lang=r.source_lang, target_lang=r.target_lang,
+                                          success=False, error="result count mismatch")
+                        for r in group]
+
+            if not json_array_engine or len(reqs) <= lines_per_request:
+                return _padded(reqs, await translator.translate_batch(reqs, progress_callback=progress_cb))
+            groups = [reqs[i:i + lines_per_request] for i in range(0, len(reqs), lines_per_request)]
+            gate = asyncio.Semaphore(parallel_requests)
+
+            async def one(group):
+                async with gate:
+                    return _padded(group, await translator.translate_batch(
+                        group, progress_callback=progress_cb))
+
+            parts = await asyncio.gather(*(one(g) for g in groups))
+            return [r for part in parts for r in part]
+
         try:
             if isinstance(translator, HyMT2Translator):
                 loop.run_until_complete(translator.verify_connection())
@@ -665,7 +710,7 @@ class AutoTranslateWorker(QThread):
                 # Segment each entry and package through TextMerger
                 segments_by_id: dict[int, list] = {}
                 pairs: list[tuple[int, str]] = []
-                merger = TextMerger(batch_size=1 if isinstance(translator, HyMT2Translator) else 15)
+                merger = TextMerger(batch_size=1 if (json_array_engine or isinstance(translator, HyMT2Translator)) else 15)
 
                 clean_by_id: dict[int, str] = {}
                 terms_by_id: dict[int, dict] = {}
@@ -859,10 +904,7 @@ class AutoTranslateWorker(QThread):
                         for req in merged_requests
                     ]
                     results = self._run_cancellable(
-                        loop,
-                        translator.translate_batch(req_objs, progress_callback=on_item_done),
-                        heartbeat=emit_progress,
-                    )
+                        loop, _send(req_objs, on_item_done), heartbeat=emit_progress)
                     meter.end_request(engine_rows if results is not None else 0)
                     if results is None:
                         _flush_pairs()
@@ -908,7 +950,7 @@ class AutoTranslateWorker(QThread):
                     # rate (and time left) reflects them honestly.
                     meter.start_request(len(retry_reqs))
                     retry_results = self._run_cancellable(
-                        loop, translator.translate_batch(retry_reqs), heartbeat=emit_progress
+                        loop, _send(retry_reqs, None), heartbeat=emit_progress
                     )
                     meter.end_request(0)
                     if retry_results is None:

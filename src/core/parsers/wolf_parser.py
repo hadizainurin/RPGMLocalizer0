@@ -59,6 +59,30 @@ WOLF_PATH_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: WOLF has no fixed character file: every database type is named by the
+#: game's author, so the category comes from the type name. The old lists only
+#: knew 主人公/プレイヤー/仲間, so in games that call it e.g. キャラ設定 or
+#: 職業 every name and profile landed in System & Terms and the Characters &
+#: Classes filter was empty. Item words are checked first ("敵スキル" is a skill).
+_WOLF_ITEM_TYPE_WORDS = (
+    "技能", "スキル", "特技", "魔法", "アイテム", "道具", "武器", "防具", "装備", "アクセサリ", "状態",
+)
+_WOLF_ACTOR_TYPE_WORDS = (
+    "主人公", "プレイヤー", "仲間", "キャラ", "人物", "職業", "クラス", "称号", "肩書",
+    "敵", "モンスター", "魔物", "ユニット", "NPC", "ＮＰＣ",
+)
+
+
+def wolf_db_type_tag(type_name: str) -> str:
+    """Category tag for a WOLF database type, from the author's type name."""
+    name = type_name or ""
+    if any(word in name for word in _WOLF_ITEM_TYPE_WORDS):
+        return "item"
+    if any(word in name for word in _WOLF_ACTOR_TYPE_WORDS):
+        return "actor"
+    return "system"
+
+
 class WolfParser(BaseParser):
     """Parser for WOLF RPG Editor binary game data files."""
 
@@ -211,9 +235,7 @@ class WolfParser(BaseParser):
             if not self._is_translatable_db_type(base, type_idx, db_type.name):
                 continue
 
-            is_item_type = any(kw in db_type.name for kw in ("技能", "スキル", "アイテム", "武器", "防具", "装備"))
-            is_actor_type = any(kw in db_type.name for kw in ("主人公", "プレイヤー", "仲間"))
-            tag = "item" if is_item_type else ("actor" if is_actor_type else "system")
+            tag = wolf_db_type_tag(db_type.name)
 
             fields = translatable_fields(db_type)
             for data_idx, record in enumerate(db_type.data):

@@ -404,6 +404,12 @@ Item {
                             onMoved: (val) => { settingsBackend.concurrentRequests = Math.round(val) }
                         }
                         StyledSlider {
+                            label: localeManager.strings.settings.local_llm_parallel_label || "Local LLM Parallel Requests"
+                            from: 1; to: 8; step: 1
+                            value: settingsBackend.localLlmParallel
+                            onMoved: (val) => { settingsBackend.localLlmParallel = Math.round(val) }
+                        }
+                        StyledSlider {
                             label: localeManager.strings.settings.max_tokens_label
                             from: 0; to: 100000; step: 512
                             editable: true

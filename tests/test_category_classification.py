@@ -69,3 +69,18 @@ class SlotCoverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WolfDatabaseTypeTagTests(unittest.TestCase):
+    def test_type_names(self):
+        from src.core.parsers.wolf_parser import wolf_db_type_tag
+        from src.core.editor.editor_store import classify_category
+        cases = {
+            "主人公ステータス": "actors", "キャラ設定": "actors", "職業": "actors",
+            "敵キャラ個体データ": "actors", "称号リスト": "actors",
+            "技能": "items", "敵スキル": "items", "アイテム": "items", "状態設定": "items",
+            "システム設定": "system", "属性名の設定": "system",
+        }
+        for type_name, expected in cases.items():
+            self.assertEqual(classify_category("DataBase.dat", wolf_db_type_tag(type_name)),
+                             expected, type_name)

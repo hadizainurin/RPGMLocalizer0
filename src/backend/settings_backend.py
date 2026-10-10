@@ -51,6 +51,9 @@ class SettingsBackend(QObject):
             "glossary_autofill": True,
             "batch_size": 15,
             "concurrent_requests": 8,
+            # Requests sent to the local LLM at once. Must match llama-server's
+            # --parallel; each slot gets ctx-size / parallel tokens of context.
+            "local_llm_parallel": 1,
             "progress_throttle_ms": 250,
             "use_multi_endpoint": True,
             "enable_lingva_fallback": True,
@@ -440,6 +443,14 @@ class SettingsBackend(QObject):
     @localLlmModel.setter
     def localLlmModel(self, val: str) -> None:
         self._set("local_llm_model", val)
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def localLlmParallel(self) -> int:
+        return max(1, min(8, int(self._get("local_llm_parallel", 1) or 1)))
+
+    @localLlmParallel.setter
+    def localLlmParallel(self, val: int) -> None:
+        self._set("local_llm_parallel", max(1, min(8, int(val))))
 
     @pyqtProperty(int, notify=settingsChanged)
     def localLlmMaxTokens(self) -> int:
