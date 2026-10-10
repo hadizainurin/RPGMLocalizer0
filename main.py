@@ -55,7 +55,6 @@ def main() -> None:
     diagnostics.install_crash_handlers()
 
     def _on_quit() -> None:
-        diagnostics.write_report("app_closing", settings_backend.get_dict())
         diagnostics.close_crash_handlers()
 
     app.aboutToQuit.connect(lambda: _on_quit())
@@ -88,13 +87,6 @@ def main() -> None:
 
     emit_runtime_diagnostics(app_backend._on_log_message)
 
-    # System log on start-up, in the background so a slow or absent LLM
-    # server never delays opening the app.
-    threading.Thread(
-        target=diagnostics.write_report,
-        args=("app_started", settings_backend.get_dict(), True),
-        daemon=True,
-    ).start()
     sys.exit(app.exec())
 
 

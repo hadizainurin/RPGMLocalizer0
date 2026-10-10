@@ -563,48 +563,63 @@ class AutoTranslateWorker(QThread):
         return loop.run_until_complete(runner())
 
     def run(self) -> None:
-        """Run, then record the outcome in the diagnostics report."""
+        """Run, keeping logs/translation.log (and system.log) up to date."""
+        from src.utils import diagnostics
         self._meter = None
         self._diag_started = time.monotonic()
+        self._run_state = {
+            "mode": "patch" if self.cache_only else ("retranslate" if self.retranslate else "translate"),
+            "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "lines_done": 0, "lines_total": None, "elapsed_seconds": 0.0,
+        }
+        if not self.cache_only:
+            # Configuration the run used, model asked from the server once.
+            diagnostics.write_report("translation_started", self.settings, probe_server=True)
+        diagnostics.start_run_log(self._run_state)
         outcome: list = []
 
         def _grab(count: int, message: str) -> None:
             outcome.append((count, message))
 
         self.finished.connect(_grab)
+        status = "crashed"
         try:
             self._run_impl()
+            message = outcome[-1][1] if outcome else ""
+            if self._cancel:
+                status = "cancelled"
+            elif message.startswith("Auto-translation error"):
+                status = "error"
+            else:
+                status = "finished"
         finally:
             try:
                 self.finished.disconnect(_grab)
             except Exception:
                 pass
-            try:
-                from src.utils import diagnostics
-                meter = self._meter
-                stats = {
-                    "mode": "patch" if self.cache_only else ("retranslate" if self.retranslate else "translate"),
-                    "engine": self.settings.get("engine"),
-                    "scope": {"file": self.file_filter, "category": self.category_filter,
-                              "search": bool(self.search_query)},
-                    "elapsed_seconds": round(time.monotonic() - self._diag_started, 1),
-                    "cancelled": self._cancel,
-                    "lines_written": outcome[-1][0] if outcome else None,
-                    "result_message": outcome[-1][1] if outcome else "no result (crashed?)",
-                }
-                if meter is not None:
-                    stats.update({
-                        "rows_total": meter.total,
-                        "rows_done": meter.done,
-                        "engine_lines": meter.engine_lines,
-                        "engine_seconds": round(meter.engine_seconds, 1),
-                        "lines_per_min": round(60 * meter.rate(), 1),
-                    })
-                diagnostics.record_run(stats)
-                diagnostics.write_report(
-                    "patch_finished" if self.cache_only else "translation_finished", self.settings)
-            except Exception as exc:
-                self.logger.debug("Diagnostics after run failed: %s", exc)
+            self._log_progress(status, outcome[-1][1] if outcome else "no result - the run crashed")
+
+    def _log_progress(self, status: str = "running", message: str = "") -> None:
+        """Write the run's current state to logs/translation.log."""
+        try:
+            from src.utils import diagnostics
+            meter = self._meter
+            state = dict(self._run_state)
+            state.update({
+                "status": status,
+                "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "elapsed_seconds": time.monotonic() - self._diag_started,
+                "message": message,
+            })
+            if meter is not None:
+                state["lines_done"] = meter.done
+                state["lines_total"] = meter.total
+                if status == "finished" and meter.elapsed() > 0:
+                    state["lines_per_min"] = 60.0 * meter.engine_lines / max(meter.elapsed(), 1e-6)
+            diagnostics.update_run_log(state)
+        except Exception as exc:
+            self.logger.debug("Translation log failed: %s", exc)
 
     def _run_impl(self) -> None:  # noqa: C901
         import asyncio
@@ -635,10 +650,6 @@ class AutoTranslateWorker(QThread):
             )
             return
 
-        from src.utils import diagnostics
-        diagnostics.write_report(
-            "patch_started" if self.cache_only else "translation_started",
-            self.settings, probe_server=not self.cache_only)
         translator = None if self.cache_only else create_translator(self.settings)
         glossary_path = self.settings.get("glossary_path", "")
         glossary = Glossary(glossary_path) if self.settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path) else None
@@ -1083,6 +1094,7 @@ class AutoTranslateWorker(QThread):
                 completed += len(batch)
                 meter.done = min(total_untranslated, completed)
                 emit_progress()
+                self._log_progress("running")
 
         except Exception as exc:
             self.finished.emit(translated_count, f"Auto-translation error: {exc}")

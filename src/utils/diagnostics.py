@@ -1,11 +1,17 @@
-"""System log and crash logs, for bug reports.
+"""System log, translation log and crash logs, for bug reports.
 
-logs/system.log - the latest state of the app, rewritten on app start,
-translation/patch start and finish, and app close. Only what a developer needs
-to reproduce a report: app version, OS, settings (API keys redacted), the
-local LLM server's own report and the last run's numbers. Python/Qt versions
-are not included - they are fixed per release, so the app version implies them.
-Previous reports are kept as system.1.log ... system.4.log (5 files at most).
+logs/system.log - the configuration a translation ran with, written once when
+the user starts a translation: app version, OS, engine, the model the server
+has loaded (asked once per run), settings (API keys redacted) and what the
+local LLM server reports about itself. Python/Qt versions are not included -
+they are fixed per release, so the app version implies them.
+Previous ones are kept as system_1.log ... system_4.log (5 files at most).
+
+logs/translation.log - how that run went: started/ended, status (finished,
+cancelled, error, or interrupted if the app was closed or crashed mid-run),
+lines done / total, lines left, elapsed, and lines/min (only for a finished
+run). Updated as the run progresses, so an abrupt end leaves the last state.
+Previous runs are kept as translation_1.log ... translation_4.log.
 
 logs/crash_YYYYMMDD-HHMMSS.log - written when the app crashes:
 - an unhandled Python exception (main thread or a worker thread), and
@@ -37,6 +43,7 @@ logger = logging.getLogger("Diagnostics")
 BACKUPS = 4               # system.log + 4 backups = 5 files at most
 MAX_CRASH_LOGS = 10
 REPORT_NAME = "system"
+RUN_LOG_NAME = "translation"
 FAULT_FILE = ".fault.tmp"
 
 _lock = threading.Lock()
@@ -104,6 +111,18 @@ def probe_local_server(settings: Dict[str, Any]) -> Dict[str, Any]:
     return info
 
 
+def model_name(info: Dict[str, Any]) -> str:
+    """The model the server has loaded, from its /models list or model path."""
+    models = info.get("models")
+    if isinstance(models, list) and models:
+        name = str(models[0] or "")
+        return name.replace("\\", "/").rsplit("/", 1)[-1]
+    path = info.get("model_path")
+    if path:
+        return str(path).replace("\\", "/").rsplit("/", 1)[-1]
+    return ""
+
+
 def record_run(stats: Dict[str, Any]) -> None:
     """Remember the latest translation run's numbers for the next report."""
     _last_run.clear()
@@ -128,30 +147,33 @@ def _kv(data: Dict[str, Any]) -> str:
 
 
 def render_report(event: str, settings: Dict[str, Any]) -> str:
+    engine = str(settings.get("engine", "") or "")
+    model = model_name(_server_info) if engine in ("local_llm", "hy_mt2") else ""
     text = (
         "RPGM Localizer system log\n"
         f"event   = {event}\n"
         f"time    = {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"version = {_app_version()}\n"
         f"os      = {platform.platform()}\n"
+        f"engine  = {engine}\n"
+        f"model   = {model}\n"
     )
     text += _section("settings") + _kv(redact_settings(settings))
     if _server_info:
         text += _section("local llm server") + _kv(_server_info)
-    if _last_run:
-        text += _section("last translation run") + _kv(_last_run)
     return text
 
 
-def _rotate(folder: Path) -> Path:
-    current = folder / f"{REPORT_NAME}.log"
+def _rotate(folder: Path, name: str = REPORT_NAME) -> Path:
+    """name.log -> name_1.log -> ... -> name_4.log (dropped after that)."""
+    current = folder / f"{name}.log"
     if current.exists():
-        (folder / f"{REPORT_NAME}.{BACKUPS}.log").unlink(missing_ok=True)
+        (folder / f"{name}_{BACKUPS}.log").unlink(missing_ok=True)
         for n in range(BACKUPS - 1, 0, -1):
-            src = folder / f"{REPORT_NAME}.{n}.log"
+            src = folder / f"{name}_{n}.log"
             if src.exists():
-                src.replace(folder / f"{REPORT_NAME}.{n + 1}.log")
-        current.replace(folder / f"{REPORT_NAME}.1.log")
+                src.replace(folder / f"{name}_{n + 1}.log")
+        current.replace(folder / f"{name}_1.log")
     return current
 
 
@@ -179,6 +201,100 @@ def write_report(event: str, settings: Optional[Dict[str, Any]] = None,
     except Exception as exc:
         logger.debug("System log failed (%s): %s", type(exc).__name__, exc)
         return None
+
+
+# --------------------------------------------------------------------------
+# Translation log (one per run, updated while it runs)
+# --------------------------------------------------------------------------
+
+def _fmt_seconds(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return ""
+    seconds = int(round(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else (f"{m}m {s:02d}s" if m else f"{s}s")
+
+
+def render_run(state: Dict[str, Any]) -> str:
+    done, total = state.get("lines_done"), state.get("lines_total")
+    finished = state.get("status") == "finished"
+    rate = state.get("lines_per_min")
+    lines = [
+        "RPGM Localizer translation log",
+        f"mode      = {state.get('mode', '')}",
+        f"started   = {state.get('started', '')}",
+        f"updated   = {state.get('updated', '')}",
+        f"status    = {state.get('status', '')}",
+        f"progress  = {'' if done is None else done} / {'' if total is None else total}",
+        f"remaining = {'' if done is None or total is None else max(0, total - done)}",
+        f"elapsed   = {_fmt_seconds(state.get('elapsed_seconds'))}",
+        # Only meaningful for a run that got to the end.
+        f"speed     = {f'{rate:.1f} lines/min' if finished and rate is not None else ''}",
+    ]
+    if state.get("message"):
+        lines.append(f"result    = {state['message']}")
+    return "\n".join(lines) + "\n"
+
+
+def _read_status(path: Path) -> str:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("status"):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def start_run_log(state: Dict[str, Any], folder: Optional[Path] = None) -> Optional[Path]:
+    """Begin a translation log. A previous run still marked running was cut off."""
+    if folder is None and os.environ.get("RPGM_NO_DIAGNOSTICS"):
+        return None
+    try:
+        out = _logs_dir(folder)
+        with _lock:
+            out.mkdir(parents=True, exist_ok=True)
+            current = out / f"{RUN_LOG_NAME}.log"
+            if current.exists() and _read_status(current) == "running":
+                text = current.read_text(encoding="utf-8").replace(
+                    "status    = running", "status    = interrupted (app closed or crashed mid-run)")
+                current.write_text(text, encoding="utf-8")
+            path = _rotate(out, RUN_LOG_NAME)
+            path.write_text(render_run(dict(state, status="running")), encoding="utf-8")
+        return path
+    except Exception as exc:
+        logger.debug("Translation log failed: %s", exc)
+        return None
+
+
+def update_run_log(state: Dict[str, Any], folder: Optional[Path] = None) -> None:
+    """Rewrite the current translation log in place (no rotation)."""
+    if folder is None and os.environ.get("RPGM_NO_DIAGNOSTICS"):
+        return
+    try:
+        out = _logs_dir(folder)
+        path = out / f"{RUN_LOG_NAME}.log"
+        tmp = path.with_suffix(".tmp")
+        with _lock:
+            tmp.write_text(render_run(state), encoding="utf-8")
+            os.replace(tmp, path)
+    except Exception as exc:
+        logger.debug("Translation log update failed: %s", exc)
+
+
+def mark_interrupted_runs(folder: Optional[Path] = None) -> None:
+    """At start-up: a log still 'running' means the last run never ended."""
+    if folder is None and os.environ.get("RPGM_NO_DIAGNOSTICS"):
+        return
+    try:
+        current = _logs_dir(folder) / f"{RUN_LOG_NAME}.log"
+        if current.exists() and _read_status(current) == "running":
+            text = current.read_text(encoding="utf-8").replace(
+                "status    = running", "status    = interrupted (app closed or crashed mid-run)")
+            current.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -239,6 +355,7 @@ def install_crash_handlers(folder: Optional[Path] = None) -> None:
     if os.environ.get("RPGM_NO_DIAGNOSTICS") and folder is None:
         return
     collect_native_crash(folder)
+    mark_interrupted_runs(folder)
     try:
         out = _logs_dir(folder)
         out.mkdir(parents=True, exist_ok=True)
@@ -266,13 +383,22 @@ def install_crash_handlers(folder: Optional[Path] = None) -> None:
 
 
 def close_crash_handlers() -> None:
-    """Normal exit: stop faulthandler and leave an empty .fault.tmp behind."""
+    """Normal exit: stop faulthandler and remove its (empty) file.
+
+    .fault.tmp only exists while the app runs: faulthandler needs a file that is
+    already open when a native crash happens, because nothing can be created at
+    that point. After a clean exit it is deleted; one left behind with content
+    is a crash, and the next start turns it into crash_*.log.
+    """
     global _fault_fh
     try:
         faulthandler.disable()
         if _fault_fh is not None:
+            name = _fault_fh.name
             _fault_fh.close()
-            Path(_fault_fh.name).write_text("", encoding="utf-8")
             _fault_fh = None
+            path = Path(name)
+            if path.exists() and path.stat().st_size == 0:
+                path.unlink()
     except Exception:
         pass
