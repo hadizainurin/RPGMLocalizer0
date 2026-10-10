@@ -281,7 +281,18 @@ class ScanWorker(QThread):
                 cur = self.store.conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM entries")
                 total = cur.fetchone()[0]
-                self.finished.emit(True, "Loaded from cache successfully.", total)
+                # The quick load skips load_entries, so its damage check never
+                # ran and bad rows came straight back. Apply it here too.
+                reverted = self.store.repair_damaged_translations(
+                    self.settings.get("source_lang", "auto"),
+                    self.settings.get("target_lang", "en"),
+                )
+                message = "Loaded from cache successfully."
+                if reverted:
+                    message += (f" {reverted} machine translations with damaged game codes "
+                                "were reset to the original - press Save to repair the game files.")
+                    self.logger.info("Reset %d damaged machine translations on quick load.", reverted)
+                self.finished.emit(True, message, total)
                 return
 
             def on_extract_progress(curr: int, total: int, msg: str) -> None:

@@ -443,12 +443,15 @@ class EditorStore:
                     # an unsaved row; either way it reappeared on every load.
                     # The row goes back to the original and, if the file holds
                     # the damaged text, is marked unsaved so Save repairs it.
-                    # Hand edits are the user's call and are only flagged.
-                    if translation_source and translation_source != "manual":
-                        from src.core.text_segmenter import has_translatable_content
-                        from src.core.translation_quality import breaks_game
-                        if (not has_translatable_content(original_text, source_lang)
-                                or breaks_game(original_text, translated_text)):
+                    # Hand edits are reset only when they break game codes - the
+                    # one thing that can crash the game; other choices stay theirs.
+                    if translation_source:
+                        from src.core.translation_quality import breaks_game, is_damaged_translation
+                        damaged = (breaks_game(original_text, translated_text)
+                                   if translation_source == "manual" else
+                                   is_damaged_translation(original_text, translated_text,
+                                                          source_lang, target_lang))
+                        if damaged:
                             file_has_damage = text != original_text
                             translated_text = original_text
                             translation_source = ""
@@ -1083,6 +1086,42 @@ class EditorStore:
             cur = self.conn.cursor()
             cur.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
+
+    def repair_damaged_translations(self, source_lang: str = "auto", target_lang: str = "en") -> int:
+        """Reset damaged machine translations already stored in the database.
+
+        The quick load ("Loaded instantly from cache") reopens the database
+        without rescanning, so load_entries' check never ran and damaged rows
+        came straight back. Same rule, applied to what is stored:
+        - saved row (is_modified=0): the game file holds the damage, so the row
+          goes back to the original and is marked unsaved - Save repairs it;
+        - unsaved row: the file never had it, so it simply reverts.
+        Hand edits are reset only if they break game codes. Returns the number
+        of rows reset.
+        """
+        from src.core.translation_quality import breaks_game, is_damaged_translation
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT id, original_text, translated_text, is_modified, translation_source "
+                "FROM entries WHERE translated_text != original_text"
+            )
+            fixes = [
+                (r["original_text"], 0 if r["is_modified"] else 1, r["id"])
+                for r in cur.fetchall()
+                if (breaks_game(r["original_text"], r["translated_text"])
+                    if r["translation_source"] == "manual" else
+                    is_damaged_translation(r["original_text"], r["translated_text"],
+                                           source_lang, target_lang))
+            ]
+            if fixes:
+                cur.executemany(
+                    "UPDATE entries SET translated_text = ?, is_modified = ?, "
+                    "translation_source = '', has_warning = 0, warning_msg = '' WHERE id = ?",
+                    fixes,
+                )
+                self.conn.commit()
+            return len(fixes)
 
     def bulk_apply_auto_translations(
         self,

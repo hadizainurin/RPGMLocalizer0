@@ -856,8 +856,9 @@ Item {
                 anchors { fill: parent; margins: 10 }
                 spacing: 8
 
-                // Tier 1: Category Chips
-                RowLayout {
+                // Tier 1: Category Chips - a Flow so they wrap instead of
+                // pushing the card wider than the window.
+                Flow {
                     Layout.fillWidth: true
                     spacing: 6
 
@@ -895,15 +896,20 @@ Item {
                     }
                 }
 
-                // Tier 2: Search Field, File Dropdown, and Status Filter Chips
-                RowLayout {
+                // Tier 2: Search Field, File Dropdown, and Status Filter Chips.
+                // A Flow: on a narrow window the status chips wrap to their own
+                // line and the search box takes the freed width.
+                Flow {
+                    id: tier2
                     Layout.fillWidth: true
                     spacing: 8
 
                     // Search input
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 200
+                        width: {
+                            var oneLine = tier2.width - fileCombo.width - statusChips.width - 2 * tier2.spacing
+                            return oneLine >= 280 ? oneLine : Math.max(160, tier2.width - fileCombo.width - tier2.spacing)
+                        }
                         height: 34
                         radius: 8
                         color: t ? t.bg2 : "#1a1a24"
@@ -992,6 +998,7 @@ Item {
 
                     // Status Chips
                     RowLayout {
+                        id: statusChips
                         spacing: 4
 
                         Repeater {
@@ -1042,6 +1049,11 @@ Item {
         AppCard {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            //: Table and edit pane share the leftover height and both shrink
+            //: toward a floor (header + ~3 rows here), instead of one keeping a
+            //: fixed size and pushing the other off the window.
+            Layout.minimumHeight: 140
+            Layout.preferredHeight: 420
             clip: true
 
             ColumnLayout {
@@ -1486,7 +1498,10 @@ Item {
         AppCard {
             id: detailCard
             Layout.fillWidth: true
-            height: 235
+            Layout.fillHeight: true
+            Layout.minimumHeight: 120
+            Layout.preferredHeight: 235
+            Layout.maximumHeight: 235
             visible: editorBackend.selectedEntry.id !== undefined && editorBackend.selectedEntry.id > 0
             property int liveLineCount: (typeof transTextArea !== "undefined" && transTextArea.text) ? ((transTextArea.text.match(/\n/g) || []).length + 1) : 1
 
@@ -1500,14 +1515,17 @@ Item {
                     Layout.fillWidth: true
                     spacing: 8
 
+                    //: Elides instead of setting a minimum width: an unelided
+                    //: Text in a RowLayout forces the whole card at least as wide
+                    //: as the text, so both panes ran off the right edge.
                     Text {
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
                         text: (editorBackend.selectedEntry.file_name || "") + " ➔ " + (editorBackend.selectedEntry.json_path || "")
                         font.pixelSize: 11
                         font.bold: true
                         color: t ? t.textSecondary : "#bbbbd0"
                     }
-
-                    Item { Layout.fillWidth: true }
 
                     // Line Counter
                     Rectangle {
@@ -1627,6 +1645,12 @@ Item {
                                 anchors.fill: parent
                                 anchors.margins: 6
                                 TextArea {
+                                    // The outer Rectangle is the frame; the Material
+                                    // TextArea drew a second outline and ~16px of
+                                    // padding inside it, which left no room on a
+                                    // short window.
+                                    background: null
+                                    padding: 4
                                     text: editorBackend.selectedEntry.original_text || ""
                                     readOnly: true
                                     wrapMode: Text.Wrap
@@ -1657,6 +1681,8 @@ Item {
                                 anchors.margins: 6
                                 TextArea {
                                     id: transTextArea
+                                    background: null
+                                    padding: 4
                                     //: True only once the person has typed in this
                                     //: box since the row was loaded. Anything the
                                     //: backend writes (a translation landing, a
@@ -1713,12 +1739,12 @@ Item {
                     spacing: 8
 
                     Text {
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
                         text: localeManager.strings.editor.ctrl_enter_tip
                         font.pixelSize: 10
                         color: t ? t.textMuted : "#666677"
                     }
-
-                    Item { Layout.fillWidth: true }
 
                     // Revert Entry Button
                     TactileButton {

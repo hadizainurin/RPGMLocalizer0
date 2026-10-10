@@ -55,6 +55,22 @@ def safe_to_reuse(original: str, translated: str, target_lang: str) -> bool:
     return not breaks_game(original, translated) and not still_untranslated(translated, target_lang)
 
 
+def is_damaged_translation(original: str, translated: str, source_lang: str, target_lang: str) -> bool:
+    """True if a stored machine translation must not stay in the project.
+
+    Used on every project load (full scan and quick load) so a bad line is
+    discarded the moment it is seen, not carried forward.
+    """
+    if not translated or translated == original:
+        return False
+    from src.core.text_segmenter import has_translatable_content
+    return (
+        not has_translatable_content(original, source_lang)
+        or breaks_game(original, translated)
+        or still_untranslated(translated, target_lang)
+    )
+
+
 def translation_issues(original: str, translated: str) -> list[str]:
     """Return reasons a translation needs review before writing game data."""
     if not translated or not translated.strip():

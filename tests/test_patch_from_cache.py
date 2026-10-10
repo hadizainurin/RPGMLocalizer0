@@ -292,11 +292,22 @@ class DamagedTranslationsAreResetOnLoadTests(unittest.TestCase):
         files = {"Map001.json": [("p0", orig, "dialogue")]}
         store.load_entries(files)
         eid = store.query_page(page_size=10)[0][0]["id"]
-        store.update_entry(eid, "Yes")  # the user's own choice
+        store.update_entry(eid, "\\c[2]\\A+Yes")  # the user's own wording, codes intact
         store.load_entries(files)
         row = store.query_page(page_size=10)[0][0]
         store.close()
-        self.assertEqual(row["translated_text"], "Yes")
+        self.assertEqual(row["translated_text"], "\\c[2]\\A+Yes")
+
+    def test_hand_edit_that_breaks_codes_is_reset(self):
+        store = EditorStore(":memory:")
+        files = {"Map001.json": [("p0", self.ORIG, "dialogue")]}
+        store.load_entries(files)
+        eid = store.query_page(page_size=10)[0][0]["id"]
+        store.update_entry(eid, "<GET_SOUNDTIME> < Data/\\cself[07]")
+        store.load_entries(files)
+        row = store.query_page(page_size=10)[0][0]
+        store.close()
+        self.assertEqual(row["translated_text"], self.ORIG)
 
     def test_good_translations_are_untouched(self):
         store = EditorStore(":memory:")
@@ -326,3 +337,47 @@ class BackupOrderTests(unittest.TestCase):
             os.utime(newer, (1000, 1000))
             os.utime(older, (time.time(), time.time()))
             self.assertEqual(BackupManager().get_backups_for_file(game)[0], older)
+
+
+class QuickLoadRepairTests(unittest.TestCase):
+    """The quick load reopens the database without rescanning; damaged rows
+    stored there came straight back and Save stayed disabled."""
+
+    ORIG = "<<GET_SOUNDTIME>>Data/\\cself[07]"
+
+    def _store_with(self, translated, source, saved):
+        store = EditorStore(":memory:")
+        store.load_entries({"CommonEvent.dat": [("p0", self.ORIG, "message")]})
+        eid = store.query_page(page_size=10)[0][0]["id"]
+        store.conn.execute(
+            "UPDATE entries SET translated_text=?, translation_source=?, is_modified=? WHERE id=?",
+            (translated, source, 0 if saved else 1, eid))
+        store.conn.commit()
+        return store
+
+    def test_saved_damage_is_reset_and_queued_for_save(self):
+        store = self._store_with("<GET_SOUNDTIME> < \\cself[07]", "auto", saved=True)
+        self.assertEqual(store.repair_damaged_translations("ja", "en"), 1)
+        row = store.query_page(page_size=10)[0][0]
+        changes, _ = store.get_modified_entries()
+        store.close()
+        self.assertEqual(row["translated_text"], self.ORIG)
+        self.assertEqual(changes["CommonEvent.dat"], {"p0": self.ORIG})
+
+    def test_unsaved_damage_just_reverts(self):
+        store = self._store_with("<GET_SOUNDTIME> < \\cself[07]", "auto", saved=False)
+        store.repair_damaged_translations("ja", "en")
+        stats = store.get_stats()
+        store.close()
+        self.assertEqual(stats["unsaved"], 0)
+
+    def test_damaged_hand_edit_is_reset(self):
+        store = self._store_with("<GET_SOUNDTIME> < Data/\\cself[07]", "manual", saved=True)
+        self.assertEqual(store.repair_damaged_translations("ja", "en"), 1)
+        store.close()
+
+    def test_second_pass_finds_nothing(self):
+        store = self._store_with("<GET_SOUNDTIME> < \\cself[07]", "auto", saved=True)
+        store.repair_damaged_translations("ja", "en")
+        self.assertEqual(store.repair_damaged_translations("ja", "en"), 0)
+        store.close()
