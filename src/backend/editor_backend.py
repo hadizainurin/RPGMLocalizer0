@@ -329,6 +329,13 @@ class ScanWorker(QThread):
                 target_lang=self.settings.get("target_lang", "tr"),
                 source_lang=self.settings.get("source_lang", "auto"),
             )
+            # load_entries deletes cached translations that fail the reuse
+            # check; persist that so they are not refused again next scan.
+            if pipeline.cache is not None:
+                try:
+                    pipeline.cache.save()
+                except Exception as save_exc:
+                    self.logger.warning("Could not persist translation cache: %s", save_exc)
 
             self.progress.emit(100, 100, "Done!")
             self.finished.emit(True, f"{total_loaded} strings loaded successfully.", total_loaded)
@@ -359,10 +366,15 @@ class AutoTranslateWorker(QThread):
         category_filter: str = "all",
         search_query: str = "",
         retranslate: bool = False,
+        cache_only: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.store = store
+        #: Patch mode: fill rows from the translation cache / glossary only.
+        #: No engine is created and nothing is sent anywhere; lines the cache
+        #: does not know stay untranslated.
+        self.cache_only = cache_only and not retranslate
         self.settings = settings
         self.file_filter = file_filter
         self.category_filter = category_filter
@@ -413,7 +425,7 @@ class AutoTranslateWorker(QThread):
         )
         from src.core.text_merger import TextMerger
         from src.core.glossary import Glossary
-        from src.core.translation_quality import translation_issues
+        from src.core.translation_quality import safe_to_reuse, translation_issues
 
         source_lang: str = self.settings.get("source_lang", "auto")
         target_lang: str = self.settings.get("target_lang", "tr")
@@ -433,7 +445,7 @@ class AutoTranslateWorker(QThread):
             )
             return
 
-        translator = create_translator(self.settings)
+        translator = None if self.cache_only else create_translator(self.settings)
         glossary_path = self.settings.get("glossary_path", "")
         glossary = Glossary(glossary_path) if self.settings.get("use_glossary") and glossary_path and os.path.isfile(glossary_path) else None
         from src.core.translators.services import HyMT2Translator
@@ -456,6 +468,8 @@ class AutoTranslateWorker(QThread):
         glossary_hits = 0
         skipped_by_rule = 0
         code_only_count = 0
+        not_cached = 0
+        rejected_count = 0
 
         # Rules that answer a line without a model request. Both match against
         # the raw original, which is what the editor shows, so a pattern written
@@ -472,7 +486,7 @@ class AutoTranslateWorker(QThread):
         glossary_autofill = bool(self.settings.get("glossary_autofill", True))
 
         translation_cache = None
-        if self.settings.get("use_cache", True):
+        if self.settings.get("use_cache", True) or self.cache_only:
             try:
                 from src.core.cache import get_cache
                 translation_cache = get_cache(
@@ -482,6 +496,51 @@ class AutoTranslateWorker(QThread):
                 )
             except Exception as cache_exc:
                 self.logger.warning("Translation cache unavailable: %s", cache_exc)
+
+        # Save writes every saved line, hand edits included, to a second cache:
+        # <project>/<target_lang>/, keyed on the raw original. Translation runs
+        # use <project>/, keyed on the cleaned source. Patch reads both, and
+        # tries each source-language key the settings may have used.
+        saved_cache = None
+        lang_keys = list(dict.fromkeys([source_lang, "auto", "ja"]))
+        if self.cache_only:
+            try:
+                from src.core.cache import TranslationCache
+                pid = get_project_id(self.settings.get("project_path", ""))
+                saved_cache = TranslationCache(
+                    cache_dir=os.fspath(get_cache_dir(pid, target_lang)),
+                    project_id=pid, target_lang=target_lang,
+                )
+            except Exception as cache_exc:
+                self.logger.warning("Saved-translation cache unavailable: %s", cache_exc)
+
+        def _cache_lookup(cache, text: str) -> Optional[str]:
+            if cache is None:
+                return None
+            keys = lang_keys if self.cache_only else [source_lang]
+            for lang in keys:
+                hit = cache.get(text, lang, target_lang)
+                if hit:
+                    return hit
+            return None
+
+        purged_count = 0
+
+        def _purge(cache, text: str) -> None:
+            """Delete a stored translation that failed the reuse check, under
+            every language key it may be filed under, so the same bad entry
+            is not found and refused again on every later run."""
+            nonlocal purged_count
+            if cache is None or not hasattr(cache, "delete"):
+                return
+            removed = False
+            for lang in lang_keys:
+                try:
+                    removed = bool(cache.delete(text, lang, target_lang)) or removed
+                except Exception:
+                    pass
+            if removed:
+                purged_count += 1
 
         try:
             if isinstance(translator, HyMT2Translator):
@@ -544,7 +603,7 @@ class AutoTranslateWorker(QThread):
                     silently left the row Untranslated with no trace of the work,
                     which looked like the translator had simply skipped it.
                     """
-                    nonlocal flagged_count
+                    nonlocal flagged_count, rejected_count
                     try:
                         eid = int(eid_raw)
                     except (ValueError, TypeError):
@@ -555,6 +614,18 @@ class AutoTranslateWorker(QThread):
                     restored = reassemble(translated, segs) if segs else translated
                     if glossary:
                         restored = glossary.restore_terms(restored, terms_by_id.get(eid, {}))
+                    if self.cache_only and not safe_to_reuse(original_by_id[eid], restored, target_lang):
+                        # Patch writes without anyone reviewing it, so a stored
+                        # translation with damaged codes is refused outright.
+                        rejected_count += 1
+                        return "rejected"
+                    if not memoize and not safe_to_reuse(original_by_id[eid], restored, target_lang):
+                        # A reused (cached / memo) translation that is unsafe:
+                        # report it so the caller deletes it, then let the
+                        # normal retry path translate the line afresh.
+                        if eid not in retry_ids:
+                            retry_ids.append(eid)
+                        return "rejected"
                     if translation_issues(original_by_id[eid], restored):
                         if not allow_issues:
                             if eid not in retry_ids:
@@ -562,6 +633,9 @@ class AutoTranslateWorker(QThread):
                             return
                         # Keep it, but it lands with a warning for review.
                         flagged_count += 1
+                        # ...and never cache it: a cached line is reused
+                        # silently everywhere else it appears, and by Patch.
+                        memoize = False
                     pairs.append((eid, restored))
                     if memoize:
                         # Key on the cleaned source so the next identical string
@@ -595,6 +669,21 @@ class AutoTranslateWorker(QThread):
                             pairs.append((entry["id"], direct))
                             continue
 
+                    # Patch: a line saved before comes back exactly as it was
+                    # saved. Still checked, so a broken line is flagged.
+                    if self.cache_only:
+                        saved = _cache_lookup(saved_cache, orig)
+                        if saved and saved != orig and has_translatable_content(orig):
+                            if not safe_to_reuse(orig, saved, target_lang):
+                                rejected_count += 1
+                                _purge(saved_cache, orig)
+                                continue
+                            if translation_issues(orig, saved):
+                                flagged_count += 1
+                            cache_hits += 1
+                            pairs.append((entry["id"], saved))
+                            continue
+
                     protected, term_map = glossary.protect_terms(orig) if glossary else (orig, {})
                     clean, segs = clean_text(protected)
                     # isalnum() was too weak: an unmasked control code such as
@@ -615,15 +704,26 @@ class AutoTranslateWorker(QThread):
                     known = None if self.retranslate else seen_translations.get(clean)
                     if known is not None:
                         memo_hits += 1
-                        _apply(entry["id"], known, memoize=False)
+                        if _apply(entry["id"], known, memoize=False,
+                                  allow_issues=self.cache_only) == "rejected":
+                            seen_translations.pop(clean, None)
                         continue
                     if translation_cache is not None and not self.retranslate:
-                        cached = translation_cache.get(clean, source_lang, target_lang)
+                        cached = _cache_lookup(translation_cache, clean)
                         if cached:
                             cache_hits += 1
                             seen_translations[clean] = cached
-                            _apply(entry["id"], cached, memoize=False)
+                            # In patch mode there is no retry pass to send a
+                            # flagged line to, so keep it (flagged for review).
+                            if _apply(entry["id"], cached, memoize=False,
+                                      allow_issues=self.cache_only) == "rejected":
+                                seen_translations.pop(clean, None)
+                                _purge(translation_cache, clean)
                             continue
+
+                    if self.cache_only:
+                        not_cached += 1
+                        continue
 
                     merger.add(
                         key=str(entry["id"]),
@@ -724,13 +824,21 @@ class AutoTranslateWorker(QThread):
             self.finished.emit(translated_count, f"Auto-translation error: {exc}")
             return
         finally:
-            loop.run_until_complete(translator.close())
+            if translator is not None:
+                loop.run_until_complete(translator.close())
             loop.close()
             if translation_cache is not None:
                 try:
                     translation_cache.save()
                 except Exception as save_exc:
                     self.logger.warning("Could not persist translation cache: %s", save_exc)
+            if saved_cache is not None:
+                try:
+                    saved_cache.save()
+                except Exception as save_exc:
+                    self.logger.warning("Could not persist saved-translation cache: %s", save_exc)
+            if purged_count:
+                self.logger.info("Removed %d unsafe translations from the cache.", purged_count)
             reused = memo_hits + cache_hits + glossary_hits
             if reused or skipped_by_rule:
                 self.logger.info(
@@ -745,6 +853,22 @@ class AutoTranslateWorker(QThread):
                 translated_count,
                 f"Cancelled - {translated_count} strings translated and saved.",
             )
+        elif self.cache_only:
+            if translation_cache is None and saved_cache is None:
+                message = "Translation cache unavailable - nothing to patch from."
+            else:
+                message = f"Patched {translated_count} lines from earlier translations."
+                if not_cached:
+                    message += f" {not_cached} are not in the cache and still need translating."
+                if rejected_count:
+                    message += (f" {rejected_count} cached translations were refused (damaged "
+                                "game codes, or still Japanese) and removed from the cache - "
+                                "those lines need translating again.")
+                if code_only_count:
+                    message += f" {code_only_count} were control codes only."
+                if flagged_count:
+                    message += f" {flagged_count} need review - see the Warnings filter."
+            self.finished.emit(translated_count, message)
         else:
             message = f"Done! {translated_count} strings translated successfully."
             if glossary_hits:
@@ -1843,12 +1967,26 @@ class EditorBackend(QObject):
         return self._store.get_untranslated_count(include_translated=include_translated)
 
     @pyqtSlot()
+    def patchFromCache(self) -> None:
+        """Fill every untranslated row from earlier translations, then Save.
+
+        For a fresh copy of a game that was translated before: the translations
+        are already in the cache, so writing them into the game needs no engine
+        and no Start Translation run.
+        """
+        self._patch_then_save = True
+        self.startAutoTranslate(cache_only=True)
+        if not self._is_auto_translating:
+            self._patch_then_save = False
+
+    @pyqtSlot()
     def startAutoTranslate(
         self,
         file_filter: str = "all",
         category_filter: str = "all",
         search_query: str = "",
         retranslate: bool = False,
+        cache_only: bool = False,
     ) -> None:
         """Launch AutoTranslateWorker over the given scope.
 
@@ -1874,6 +2012,7 @@ class EditorBackend(QObject):
             category_filter=category_filter,
             search_query=search_query,
             retranslate=retranslate,
+            cache_only=cache_only,
             parent=self,
         )
         self._auto_translate_worker.progress.connect(self._on_auto_translate_progress)
@@ -1950,6 +2089,12 @@ class EditorBackend(QObject):
 
         self._auto_translate_worker = None
 
+        # Patch = fill from cache + write to the game in one click.
+        if getattr(self, "_patch_then_save", False):
+            self._patch_then_save = False
+            if count > 0:
+                self.saveChanges()
+
     @pyqtSlot()
     def saveChanges(self) -> None:
         """Surgically save modified files, take atomic backups, and update translation cache."""
@@ -2018,8 +2163,15 @@ class EditorBackend(QObject):
                     #    same way ScanWorker looks entries up (settings source_lang).
                     if pipeline.cache:
                         orig_file_map = originals_by_file.get(fp, {})
+                        from src.core.translation_quality import safe_to_reuse
                         for jp, trans_text in changes.items():
                             orig_text = orig_file_map.get(jp, trans_text)
+                            # The cache is replayed without review (scan, Patch),
+                            # so a line with damaged codes, or one that is still
+                            # Japanese, is saved to the game as the user asked
+                            # but never stored for reuse.
+                            if not safe_to_reuse(orig_text, trans_text, target_lang):
+                                continue
                             pipeline.cache.set(orig_text, trans_text, source_lang, target_lang)
 
                     saved_files.append(fp)

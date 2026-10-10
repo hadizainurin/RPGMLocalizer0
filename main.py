@@ -30,6 +30,12 @@ def main() -> None:
     # QApplication (not QGuiApplication) is required: AppBackend's file/folder
     # pickers use QFileDialog, a QtWidgets class that needs a real QApplication.
     app = QApplication(sys.argv)
+    # Fixed name, so Qt's own compiled-QML cache (%LOCALAPPDATA%\<name>\cache)
+    # lands in one folder. Unset, Qt took the name from the running program,
+    # which gave RPGMLocalizer, RPGMLocalizer-Windows and RPGMLocalizer0
+    # folders depending on how the app was started. Translations are not
+    # stored there - see src/utils/app_paths.py.
+    app.setApplicationName("RPGMLocalizer")
 
     icon_path = existing_resource_path("icon.png", "icon.ico")
     if icon_path:

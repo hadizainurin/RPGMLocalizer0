@@ -382,6 +382,19 @@ class EditorStore:
                         except Exception:
                             cached = None
                         original_text = text
+                        # Replayed without review, so a cached line whose codes
+                        # no longer match is ignored rather than loaded.
+                        if cached and cached != text:
+                            from src.core.translation_quality import safe_to_reuse
+                            if not safe_to_reuse(text, cached, target_lang):
+                                # Remove it so it is not refused again on every scan.
+                                if hasattr(cache_resolver, "delete"):
+                                    for lang in dict.fromkeys([source_lang, "auto", "ja"]):
+                                        try:
+                                            cache_resolver.delete(text, lang, target_lang)
+                                        except Exception:
+                                            pass
+                                cached = None
                         translated_text = cached if cached else text
                     else:
                         original_text = text
@@ -1066,6 +1079,12 @@ class EditorStore:
                 lines, overflow = check_line_overflow(new_text, tag)
                 if overflow:
                     warnings.append(f"Message box limit exceeded ({lines}/4 lines)")
+                # The worker reports these as "need review - see the Warnings
+                # filter", so they must actually land under Warnings.
+                from src.core.translation_quality import translation_issues
+                for issue in translation_issues(orig, new_text):
+                    if issue == "line break count changed":
+                        warnings.append("Line break count changed")
 
                 updates.append((
                     new_text,

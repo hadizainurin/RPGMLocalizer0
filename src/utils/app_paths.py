@@ -189,6 +189,9 @@ def _extract_title_from_exe(project_path: Path, game_exe_path: str | Path | None
         "run", "patch", "rpgmlocalizer", "index",
         "notification_helper", "chromedriver", "crash_inspector",
         "elevate", "ffmpeg", "node",
+        # WOLF RPG ships Config.exe (the settings tool) beside Game.exe. Taking
+        # it as the title filed every WOLF game under one shared "Config" cache.
+        "config", "editor", "gamepro",
     }
     if game_exe_path:
         exe_p = Path(game_exe_path)
@@ -206,6 +209,138 @@ def _extract_title_from_exe(project_path: Path, game_exe_path: str | Path | None
     return None
 
 
+_WOLF_GAME_DAT_DIRS = ((), ("Data", "BasicData"), ("BasicData",), ("Data",))
+
+
+def _find_child(parent: Path, name: str) -> Path | None:
+    """Case-insensitive child lookup (WOLF folders are Data/data, BasicData/basicdata)."""
+    direct = parent / name
+    if direct.exists():
+        return direct
+    try:
+        lowered = name.lower()
+        for entry in parent.iterdir():
+            if entry.name.lower() == lowered:
+                return entry
+    except OSError:
+        pass
+    return None
+
+
+def _extract_title_from_wolf_game_dat(project_path: Path) -> str | None:
+    """Read the game title from a WOLF RPG Game.dat.
+
+    WOLF games ship a generic Game.exe, so without this the project id fell
+    back to the folder name: a copy of the game in a differently named folder
+    got an empty cache. Layout: 0x00 + 9-byte magic ('W..OL.FM' + 0x00 or 'U'
+    for UTF-8), int N, N setting bytes, int string count, then the strings -
+    the first of which is the title. An archived (Data.wolf) game has no loose
+    Game.dat and keeps the folder-name fallback.
+    """
+    game_dat = None
+    for parts in _WOLF_GAME_DAT_DIRS:
+        folder: Path | None = project_path
+        for part in parts:
+            folder = _find_child(folder, part) if folder else None
+        if folder and folder.is_dir():
+            candidate = _find_child(folder, "Game.dat")
+            if candidate and candidate.is_file():
+                game_dat = candidate
+                break
+    if game_dat is None:
+        return None
+    try:
+        data = game_dat.read_bytes()[:4096]
+        if len(data) < 18 or data[1:2] != b"W" or data[4:6] != b"OL" or data[7:9] != b"FM":
+            return None
+        utf8 = data[9] == 0x55
+        pos = 10
+        n_settings = int.from_bytes(data[pos:pos + 4], "little", signed=True)
+        if not 0 <= n_settings <= 1024:
+            return None
+        pos += 4 + n_settings
+        n_strings = int.from_bytes(data[pos:pos + 4], "little", signed=True)
+        if n_strings <= 0:
+            return None
+        pos += 4
+        size = int.from_bytes(data[pos:pos + 4], "little", signed=True)
+        if not 1 < size <= 512 or pos + 4 + size > len(data):
+            return None
+        raw = data[pos + 4:pos + 4 + size - 1]
+        for enc in (("utf-8", "cp932") if utf8 else ("cp932", "utf-8")):
+            try:
+                title = raw.decode(enc).strip()
+                return title or None
+            except UnicodeDecodeError:
+                continue
+    except OSError:
+        return None
+    return None
+
+
+def _has_cache_data(folder: Path) -> bool:
+    """True if `folder` holds any file. get_cache_dir creates empty project and
+    language folders on first use, so an existing folder may hold nothing."""
+    try:
+        return folder.exists() and any(f.is_file() for f in folder.rglob("*"))
+    except OSError:
+        return True
+
+
+def _adopt_legacy_project_cache(new_id: str, legacy_id: str, copy: bool = False) -> str:
+    """Bring a project's cache over from an id it was filed under before.
+
+    `copy` is for an id several games may share (WOLF's "Config"): the folder
+    is copied so the other games keep theirs. Otherwise it is moved. Returns the
+    id to use; if the move fails (in use, no permission), the old id is kept so
+    no translation is ever stranded. An existing cache under `new_id` is never
+    touched.
+    """
+    if not legacy_id or new_id == legacy_id:
+        return new_id
+    try:
+        base = get_data_dir() / "cache"
+        old_dir, new_dir = base / legacy_id, base / new_id
+        if old_dir.is_dir() and _has_cache_data(old_dir) and not _has_cache_data(new_dir):
+            try:
+                if new_dir.exists():
+                    import shutil
+                    shutil.rmtree(new_dir)  # only empty folders, checked above
+                if copy:
+                    import shutil
+                    shutil.copytree(old_dir, new_dir)
+                else:
+                    old_dir.rename(new_dir)
+            except OSError:
+                if copy:
+                    import shutil
+                    shutil.rmtree(new_dir, ignore_errors=True)
+                return legacy_id
+    except Exception:
+        pass
+    return new_id
+
+
+def _is_wolf_project(project_path: Path) -> bool:
+    data = _find_child(project_path, "Data")
+    return bool(
+        (data and (_find_child(data, "BasicData") or _find_child(data, "BasicData.wolf")))
+        or _find_child(project_path, "BasicData")
+    )
+
+
+def _adopt_wolf_legacy_caches(project_path: Path, new_id: str) -> str:
+    """WOLF projects were filed under the folder name, or under "Config" when a
+    Config.exe sat beside Game.exe. Adopt whichever exists, first match wins."""
+    dir_id = normalize_project_name(project_path.name or project_path.resolve().name)
+    chosen = _adopt_legacy_project_cache(new_id, dir_id)
+    if chosen != new_id or _has_cache_data(get_data_dir() / "cache" / new_id):
+        return chosen
+    if _find_child(project_path, "Config.exe"):
+        return _adopt_legacy_project_cache(new_id, "Config", copy=True)
+    return new_id
+
+
 def get_project_id(project_path: str | Path | None, game_exe_path: str | Path | None = None) -> str:
     """
     Extracts a robust and stable project identifier for translation cache.
@@ -213,6 +348,7 @@ def get_project_id(project_path: str | Path | None, game_exe_path: str | Path | 
     1. MV/MZ package.json (window.title or name)
     2. MV/MZ data/System.json (gameTitle)
     3. XP/VX/VXA Game.ini (Title)
+    3b. WOLF RPG Game.dat (title string)
     4. Custom game executable name
     5. Fallback to normalized project directory name
     """
@@ -242,6 +378,14 @@ def get_project_id(project_path: str | Path | None, game_exe_path: str | Path | 
         if cleaned:
             return cleaned
 
+    # Strategy 3b: WOLF RPG Game.dat. An existing cache under the folder-name
+    # id (how WOLF projects were keyed before) is adopted, not abandoned.
+    title = _extract_title_from_wolf_game_dat(p)
+    if title:
+        cleaned = normalize_project_name(title)
+        if cleaned:
+            return _adopt_wolf_legacy_caches(p, cleaned)
+
     # Strategy 4: Custom game executable
     title = _extract_title_from_exe(p, game_exe_path)
     if title:
@@ -254,6 +398,8 @@ def get_project_id(project_path: str | Path | None, game_exe_path: str | Path | 
     if dir_name:
         cleaned = normalize_project_name(dir_name)
         if cleaned:
+            if _is_wolf_project(p):
+                return _adopt_wolf_legacy_caches(p, cleaned)
             return cleaned
 
     return "default_project"

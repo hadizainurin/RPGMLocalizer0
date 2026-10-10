@@ -581,6 +581,20 @@ Item {
                 }
             }
 
+            //: Patch: write earlier translations into this copy of the game
+            //: without sending anything to an engine. A fresh copy of a game
+            //: that was translated before is untranslated on disk, but every
+            //: line is still in the translation cache.
+            TactileButton {
+                label: localeManager.strings.editor.patch_from_cache_button || "🩹 Patch from Cache"
+                variant: "ghost"
+                enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating && !appBackend.isRunning && editorBackend.untranslatedCount > 0
+                onClicked: {
+                    root.flushPendingEdit()
+                    editorBackend.patchFromCache()
+                }
+            }
+
             // Batch Replace Button
             TactileButton {
                 label: localeManager.strings.editor.batch_replace_button

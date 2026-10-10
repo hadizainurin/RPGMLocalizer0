@@ -221,8 +221,17 @@ Popup {
             }
         }
 
-        // Default to Google Web (free, no API key)
+        // Open on the engine used last time (saved with each run by
+        // startAutoTranslateWithOptions), so Local LLM users do not have to
+        // pick it again every run. Google Web is the fallback.
+        var savedEngine = settingsBackend.engine || "google"
         engineCombo.currentIndex = 0
+        for (var e = 0; e < engines.length; e++) {
+            if (engines[e].id === savedEngine) {
+                engineCombo.currentIndex = e
+                break
+            }
+        }
 
         geminiKeyInput.text = settingsBackend.geminiApiKey || ""
         geminiModelInput.text = settingsBackend.geminiModel || "gemini-2.5-flash"

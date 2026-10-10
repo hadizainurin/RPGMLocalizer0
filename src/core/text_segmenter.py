@@ -83,7 +83,11 @@ _PROTECT_PATTERN_STR = (
     r'\\[Pp][Oo][Pp]\[[^\]]*\]|'        # \pop[...] - popup
     r'\\[Ww][Oo][Rr][Dd][Ww][Rr][Aa][Pp]\[[^\]]*\]|'  # \WordWrap[...]
     r'\\msghnd|'                         # \msghnd
-    r'\\[A-Za-z]{1,3}\d{0,2}[+\-]?(?![A-Za-z0-9_\[])|'  # WOLF bare codes: \E \A+ \N \wE \cE
+    r'\\[A-Za-z]{1,3}\d{0,2}(?:[+\-]|(?![A-Za-z0-9_\[]))|'  # WOLF bare codes: \E \A+ \N \wE \cE
+                                         # A trailing +/- ends the code outright: with
+                                         # the lookahead on it, \A+Special backtracked
+                                         # to \A, so English text after \A+ read as a
+                                         # changed code and every such line was flagged.
     r'\\[-+]|'                           # \- \+ bare operators
                                          # ASCII-only lookahead: \w matches CJK,
                                          # so \A+勇者 lost its + to backtracking.

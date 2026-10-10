@@ -215,6 +215,17 @@ class TranslationCache:
         if self._pending_writes >= 50:
             self.save()
 
+    def delete(self, text: str, source_lang: str, target_lang: str) -> bool:
+        """Remove one entry. Used when a stored translation turns out to be
+        unsafe, so it is not found - and refused - again on every run."""
+        text_hash = self._hash_text(text, source_lang, target_lang)
+        if text_hash in self.cache:
+            del self.cache[text_hash]
+            self._modified = True
+            self._pending_writes += 1
+            return True
+        return False
+
     def get_or_translate(
         self,
         text: str,
