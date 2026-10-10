@@ -2092,7 +2092,10 @@ class EditorBackend(QObject):
         # Patch = fill from cache + write to the game in one click.
         if getattr(self, "_patch_then_save", False):
             self._patch_then_save = False
-            if count > 0:
+            # Save whenever anything is waiting, not only when this run filled
+            # rows: the scan already fills cached rows, and those need writing too.
+            self._refresh_stats()
+            if self._unsaved_count > 0:
                 self.saveChanges()
 
     @pyqtSlot()

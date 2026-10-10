@@ -223,3 +223,31 @@ class TranslationRunPurgeTests(unittest.TestCase):
         store.close()
         self.assertIn("もちろんですよね", run.deleted)
         self.assertNotEqual(row["translated_text"], "もちろんてすよね")
+
+
+class ScanFillIsSavedTests(unittest.TestCase):
+    """Rows the scan fills from the cache are not in the game file yet. They
+    showed as Translated but were not unsaved, so Save - and Patch, which only
+    fills Untranslated rows - never wrote them: the game kept the Japanese."""
+
+    def test_cache_filled_rows_are_unsaved(self) -> None:
+        cache = _DeletableCache({"はい": "Yes"})
+        store = EditorStore(":memory:")
+        store.load_entries({"Map001.json": [("p0", "はい", "dialogue"), ("p1", "いいえ", "dialogue")]},
+                           cache_resolver=cache, target_lang="en", source_lang="ja")
+        stats = store.get_stats()
+        changes, _ = store.get_modified_entries()
+        store.close()
+        self.assertEqual(stats["translated"], 1)
+        self.assertEqual(stats["unsaved"], 1)
+        self.assertEqual(stats["modified"], 0)  # still "Translated", not "Edited by me"
+        self.assertEqual(changes["Map001.json"], {"p0": "Yes"})
+
+    def test_rows_already_in_the_game_file_stay_saved(self) -> None:
+        store = EditorStore(":memory:")
+        store.load_entries({"Map001.json": [("p0", "Yes", "dialogue")]},
+                           backup_files={"Map001.json": {"p0": "はい"}})
+        stats = store.get_stats()
+        store.close()
+        self.assertEqual(stats["translated"], 1)
+        self.assertEqual(stats["unsaved"], 0)

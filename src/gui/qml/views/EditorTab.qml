@@ -588,7 +588,7 @@ Item {
             TactileButton {
                 label: localeManager.strings.editor.patch_from_cache_button || "🩹 Patch from Cache"
                 variant: "ghost"
-                enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating && !appBackend.isRunning && editorBackend.untranslatedCount > 0
+                enabled_: editorBackend.projectLoaded && !editorBackend.isScanning && !editorBackend.isAutoTranslating && !appBackend.isRunning && (editorBackend.untranslatedCount > 0 || editorBackend.unsavedCount > 0)
                 onClicked: {
                     root.flushPendingEdit()
                     editorBackend.patchFromCache()

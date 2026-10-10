@@ -367,6 +367,9 @@ class EditorStore:
                 for idx, (path, text, tag) in enumerate(entries):
                     category = classify_category(file_name, tag)
 
+                    # Filled from the cache, i.e. NOT what the game file contains.
+                    from_cache = False
+
                     # Tri-layer text resolution: Vanilla vs Current Translation
                     if path in file_backups:
                         original_text = file_backups[path]
@@ -396,15 +399,22 @@ class EditorStore:
                                             pass
                                 cached = None
                         translated_text = cached if cached else text
+                        from_cache = bool(cached) and cached != text
                     else:
                         original_text = text
                         translated_text = text
 
-                    is_modified = 0
+                    # A translation taken from the cache is not in the game file
+                    # yet, so the row must be written on Save. Left unmodified,
+                    # it showed as Translated in the editor while Save (and
+                    # Patch, which only fills Untranslated rows) skipped it -
+                    # the game kept the Japanese.
+                    is_modified = 1 if from_cache else 0
                     pending = pending_edits.get((norm_fp, path))
                     if pending is not None and pending != translated_text:
                         translated_text = pending
                         is_modified = 1
+                        from_cache = False
 
                     if not translated_text or translated_text == original_text:
                         translation_source = ""
@@ -416,6 +426,8 @@ class EditorStore:
                         prior = prior_sources.get((norm_fp, path))
                         if prior:
                             translation_source = prior
+                        elif from_cache:
+                            translation_source = "auto"
                         elif is_modified:
                             translation_source = "manual"
                         else:
