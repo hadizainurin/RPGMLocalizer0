@@ -49,6 +49,24 @@ logger = logging.getLogger("LLMServices")
 
 
 
+#: A character repeated 4+ times in a row. Non-ASCII (kana, ー, ～, ！, fullwidth)
+#: plus ASCII ! ? ~ - never "|", so the |||TXTSEG||| separators are safe.
+_ELONGATION_RE = re.compile(r"([^\x00-\x7F]|[!?~])\1{3,}")
+
+
+def squeeze_elongation(text: str) -> str:
+    """Shorten stretched sounds before they reach a local model.
+
+    「ふぁふぉふぇえーーーーーーーーー！！」 and 「うわああああああっ！！！」 sent a
+    12B model into "eeee…" / "YOUUUU…" until the output cap - minutes of a
+    server slot per line, on every retry, and the line never finished. Three
+    repeats carry the same meaning ("Aaah", "Noooo") and do not trigger it.
+    """
+    if not text:
+        return text
+    return _ELONGATION_RE.sub(lambda m: m.group(1) * 3, text)
+
+
 class _OutputLimitHit(list):
     """A failed reply that ran into the output cap (as opposed to a timeout).
 
@@ -355,14 +373,14 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
     #: -n / n_predict); guessing it from the client was worse than not guessing.
     max_tokens_override: int = 0
 
-    #: Runaway guard used when no explicit cap is set. Deliberately generous -
-    #: the removed auto-cap was 1x source characters and truncated real replies;
-    #: this is 4x plus headroom, far above any real translation (Japanese runs
-    #: ~1-1.5 English tokens per character), but it stops a model that loops
-    #: inside a string. Without it, one looping request generated until the
-    #: context filled (minutes at ~22 tok/s), timed out, and was re-sent.
-    RUNAWAY_TOKENS_PER_CHAR = 4
-    RUNAWAY_TOKENS_FLOOR = 512
+    #: Runaway guard used when no explicit cap is set. Payload logs put real
+    #: replies at ~0.8 tokens per source character (0.6-1.0); the removed
+    #: auto-cap was 1x and truncated the long tail. 2x plus 48 per line still
+    #: clears every real reply logged, while a looping request is cut off in
+    #: about half the time the earlier 4x allowed - at ~18 tok/s per slot, a
+    #: 4x cap kept a slot busy ~3 minutes per loop.
+    RUNAWAY_TOKENS_PER_CHAR = 2
+    RUNAWAY_TOKENS_FLOOR = 384
 
     def _output_token_budget(self, clean_texts: Sequence[str]) -> int:
         """Return the explicit cap, or 0 to send none."""
@@ -370,7 +388,7 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
 
     def _runaway_guard(self, clean_texts: Sequence[str]) -> int:
         chars = sum(len(t or "") for t in clean_texts)
-        return max(self.RUNAWAY_TOKENS_FLOOR, self.RUNAWAY_TOKENS_PER_CHAR * chars + 64 * len(clean_texts))
+        return max(self.RUNAWAY_TOKENS_FLOOR, self.RUNAWAY_TOKENS_PER_CHAR * chars + 48 * len(clean_texts))
 
     def _dump_exchange(self, kind: str, data: Any, exchange_id: Optional[str] = None) -> None:
         """Write the raw request/response to logs when payload dumping is enabled.
@@ -581,7 +599,10 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         self, clean_texts: List[str], source_lang: str, target_lang: str
     ) -> List[Optional[str]]:
         await self._ensure_model()
-        return await super()._translate_clean_texts(clean_texts, source_lang, target_lang)
+        # Only what is sent changes; results stay positional, so cache keys
+        # and reassembly are untouched.
+        sent = [squeeze_elongation(t) for t in clean_texts]
+        return await super()._translate_clean_texts(sent, source_lang, target_lang)
 
     #: Set when the server rejects response_format; then plain JSON prompting.
     _structured_output_unsupported = False
@@ -622,7 +643,10 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
                         "properties": {
                             "t": {
                                 "type": "array",
-                                "items": {"type": "string"},
+                                # minLength: the grammar otherwise allows "",
+                                # and the model sometimes took that shortcut,
+                                # returning 12 empty strings in 2 seconds.
+                                "items": {"type": "string", "minLength": 1},
                                 "minItems": item_count,
                                 "maxItems": item_count,
                             },

@@ -59,6 +59,7 @@ class StructuredOutputTests(unittest.TestCase):
         p = session.payloads[0]
         arr = p["response_format"]["json_schema"]["schema"]["properties"]["t"]
         self.assertEqual((arr["minItems"], arr["maxItems"]), (3, 3))
+        self.assertEqual(arr["items"].get("minLength"), 1)
         self.assertEqual(p["temperature"], 0.0)
 
     def test_server_without_schema_support_falls_back(self):
@@ -113,7 +114,7 @@ class RunawayGuardTests(unittest.TestCase):
         t, session = self._translator([_ok(["a", "b"])])
         asyncio.run(t._translate_clean_texts(["あいうえお", "かきくけこ"], "ja", "en"))
         cap = session.payloads[0]["max_tokens"]
-        self.assertGreaterEqual(cap, 512)
+        self.assertGreaterEqual(cap, LocalLLMTranslator.RUNAWAY_TOKENS_FLOOR)
 
     def test_explicit_cap_wins(self):
         t, session = self._translator([_ok(["a"])])
@@ -134,3 +135,32 @@ class RunawayGuardTests(unittest.TestCase):
             return [None, None]
         t._translate_clean_texts = nothing
         self.assertIsNone(asyncio.run(t._translate_with_retry_and_fallback(["あ", "い"], "ja", "en")))
+
+
+class ElongationTests(unittest.TestCase):
+    def test_stretched_sounds_are_shortened(self):
+        from src.core.translators.services import squeeze_elongation
+        self.assertEqual(squeeze_elongation("「ふぁふぉふぇえーーーーーーーーー！！」"), "「ふぁふぉふぇえーーー！！」")
+        self.assertEqual(squeeze_elongation("「うわああああああっ！！！！！」"), "「うわあああっ！！！」")
+
+    def test_normal_text_and_separators_untouched(self):
+        from src.core.translators.services import squeeze_elongation
+        for text in ("「……ほ、本気か？」", "a|||TXTSEG||||||TXTSEG|||b", "\\\\c[0000]\\\\f[24]", "ええ、そうね。"):
+            self.assertEqual(squeeze_elongation(text), text)
+
+    def test_only_the_request_changes(self):
+        t = LocalLLMTranslator(model="m")
+        session = _Session([_ok(["Aaah!!"])])
+
+        async def get_session():
+            return session
+        t._get_session = get_session
+        out = asyncio.run(t._translate_clean_texts(["うわああああああ！！"], "ja", "en"))
+        self.assertEqual(out, ["Aaah!!"])
+        self.assertEqual(json.loads(session.payloads[0]["messages"][1]["content"]), ["うわあああ！！"])
+
+    def test_cap_still_clears_real_replies(self):
+        t = LocalLLMTranslator(model="m")
+        # Longest real ratio seen in the logs: ~1.0 token per source char.
+        texts = ["あ" * 60] * 12
+        self.assertGreater(t._runaway_guard(texts), 1.0 * sum(map(len, texts)) * 1.5)
