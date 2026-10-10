@@ -526,11 +526,18 @@ Item {
         // =====================================================
         // HEADER & ACTION BAR
         // =====================================================
-        RowLayout {
+        //: Title on its own row, buttons in a Flow below it. The buttons used
+        //: to share one RowLayout with the title: their combined width (~1150
+        //: px, more with long counts) exceeded the window below ~1450 px, and a
+        //: RowLayout cannot shrink a button below its text, so the buttons
+        //: overlapped the status line or ran off the right edge on resize.
+        //: A Flow wraps them onto a second line instead.
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: 12
+            spacing: 10
 
             ColumnLayout {
+                Layout.fillWidth: true
                 spacing: 2
                 Text {
                     text: localeManager.strings.editor.header_title
@@ -551,11 +558,15 @@ Item {
                                         : localeManager.strings.editor.status_no_data)
                                     : localeManager.strings.editor.status_waiting)))
                     font.pixelSize: 12
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
                     color: (editorBackend.isScanning || editorBackend.isAutoTranslating) ? "#ffaa00" : (t ? t.textSecondary : "#9a9ab2")
                 }
             }
 
-            Item { Layout.fillWidth: true }
+            Flow {
+                Layout.fillWidth: true
+                spacing: 8
 
             // Rescan Button
             TactileButton {
@@ -638,6 +649,7 @@ Item {
                     root.flushPendingEdit()
                     editorBackend.saveChanges()
                 }
+            }
             }
         }
 

@@ -673,7 +673,7 @@ class AutoTranslateWorker(QThread):
                     # saved. Still checked, so a broken line is flagged.
                     if self.cache_only:
                         saved = _cache_lookup(saved_cache, orig)
-                        if saved and saved != orig and has_translatable_content(orig):
+                        if saved and saved != orig and has_translatable_content(orig, source_lang):
                             if not safe_to_reuse(orig, saved, target_lang):
                                 rejected_count += 1
                                 _purge(saved_cache, orig)
@@ -690,7 +690,7 @@ class AutoTranslateWorker(QThread):
                     # \E or \A+ is alphanumeric, so pure-code lines were sent to
                     # the engine, came back with the codes reordered, and
                     # rendered as garbage in-game. Require real language.
-                    if not has_translatable_content(orig):
+                    if not has_translatable_content(orig, source_lang):
                         code_only_count += 1
                         continue
 

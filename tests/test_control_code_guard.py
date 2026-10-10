@@ -179,3 +179,42 @@ class RealProjectCodeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScriptDirectiveTests(unittest.TestCase):
+    """<<GET_SOUNDTIME>>Data/\\cself[07] was sent to the model and came back as
+    "<GET_SOUNDTIME> < \\cself[07]": the outer <> and the path were lost."""
+
+    LINE = "<<GET_SOUNDTIME>>Data/\\cself[07]"
+
+    def test_double_angle_directive_is_one_code(self):
+        from src.core.text_segmenter import segment_text, SegmentType
+        codes = [s.content for s in segment_text(self.LINE) if s.type == SegmentType.CODE]
+        self.assertEqual(codes, ["<<GET_SOUNDTIME>>", "\\cself[07]"])
+
+    def test_directive_line_is_not_sent(self):
+        from src.core.text_segmenter import has_translatable_content
+        self.assertFalse(has_translatable_content(self.LINE))
+        self.assertFalse(has_translatable_content(self.LINE, "ja"))
+
+    def test_file_paths_and_identifiers_are_not_language(self):
+        from src.core.text_segmenter import has_translatable_content
+        for line in ("SE/door.ogg", "Picture/face_01.png", "SYS_FLAG_ON"):
+            self.assertFalse(has_translatable_content(line, "ja"), line)
+
+    def test_japanese_source_needs_japanese(self):
+        from src.core.text_segmenter import has_translatable_content
+        self.assertFalse(has_translatable_content("Data", "ja"))
+        self.assertTrue(has_translatable_content("HP_MAX が上がった", "ja"))
+        self.assertTrue(has_translatable_content("Hello there", "en"))
+
+    def test_lost_angle_bracket_is_game_breaking(self):
+        from src.core.translation_quality import breaks_game
+        self.assertTrue(breaks_game(self.LINE, "<GET_SOUNDTIME> < \\cself[07]"))
+        self.assertFalse(breaks_game(self.LINE, self.LINE))
+
+    def test_syntax_guard_masks_it_too(self):
+        from src.core.syntax_guard_rpgm import protect_rpgm_syntax
+        protected = protect_rpgm_syntax(self.LINE)
+        text = protected[0] if isinstance(protected, tuple) else protected
+        self.assertNotIn("GET_SOUNDTIME", text)

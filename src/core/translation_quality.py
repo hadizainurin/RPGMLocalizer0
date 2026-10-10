@@ -64,6 +64,11 @@ def translation_issues(original: str, translated: str) -> list[str]:
     translated_codes = Counter(segment.content for segment in segment_text(translated) if segment.type == SegmentType.CODE)
     if source_codes != translated_codes:
         issues.append("game codes or tags changed")
+    elif original.count("<") != translated.count("<") or original.count(">") != translated.count(">"):
+        # Angle brackets are script syntax in these engines (<<GET_SOUNDTIME>>);
+        # a model that drops or adds one breaks the line even when every
+        # recognised code survived.
+        issues.append("game codes or tags changed")
     if Counter(_PLACEHOLDER_RE.findall(original)) != Counter(_PLACEHOLDER_RE.findall(translated)):
         issues.append("format placeholders changed")
     # A changed line-break count is a layout nuisance, not a corruption risk:

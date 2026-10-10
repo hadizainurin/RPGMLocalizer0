@@ -94,6 +94,8 @@ _PROTECT_PATTERN_STR = (
     r'\\[{}.<>!gG$\\nNip^;|]|'           # Simple escapes (incl. \G currency, \| wait, \N)
     r'\b(?:if|en|req|cond|eval)\s*\((?:[^()\n]|\([^()\n]*\))+\)|'  # Choice condition plugins: if(s[1]), en(v[2]>=10)
     r'\b[vsVS]\[\d+\]|'                 # Variable/switch references: v[2], s[10]
+    r'<<[^<>\n]+>>|'                     # Script directives: <<GET_SOUNDTIME>> (before the single-<> tag rule,
+                                         # which matched the inner <GET_SOUNDTIME> and left the outer < > as text)
     r'</?[a-zA-Z][a-zA-Z0-9_\s:-]*>|'    # XML/plugin tags: <WordWrap>, <ChoiceHelp>, <page condition>
     r'\[(?:sad|happy|angry|sweat|confused|smirk|evil|thinking|doubt|grin|NOTE|custom)\d*\]|'  # Flavor tags
     r'\[[^\[\]]+\])'                     # Generic [variable]
@@ -305,8 +307,12 @@ _LANGUAGE_RE = re.compile(
 #: Leftovers that look like a control code the mask did not recognise.
 _CODE_REMNANT_RE = re.compile(r"\\[A-Za-z]+\+?|\[[^\[\]]*\]|[\\|+<>^$]")
 
+#: SCREAMING_SNAKE identifiers (GET_SOUNDTIME) are script, not language.
+_SCRIPT_RESIDUE_CASE_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+_CJK_LANGUAGE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff66-\uff9f]")
 
-def has_translatable_content(text: str) -> bool:
+
+def has_translatable_content(text: str, source_lang: str = "") -> bool:
     """True when a line contains language a translator could act on.
 
     A WOLF line such as ``\\E\\c[00]\\f[24]\\A+\\s[000]\\N`` is pure control
@@ -321,4 +327,14 @@ def has_translatable_content(text: str) -> bool:
     clean, _segments = clean_text(text)
     residue = clean.replace(TEXT_SEGMENT_SEPARATOR, " ")
     residue = _CODE_REMNANT_RE.sub(" ", residue)
+    # Paths, file names and SCREAMING_SNAKE identifiers are script, not
+    # language: <<GET_SOUNDTIME>>Data/\cself[07] was sent to the model and came
+    # back as "<GET_SOUNDTIME> < \cself[07]".
+    residue = _SCRIPT_RESIDUE_CASE_RE.sub(" ", residue)
+    residue = re.sub(r"[\w.\-]+/|[\w\-]+\.(?:png|jpe?g|bmp|gif|ogg|wav|mp3|mid|txt|dat|mps|json|js|csv)\b",
+                     " ", residue, flags=re.IGNORECASE)
+    # A Japanese (or Chinese/Korean) source line with no CJK left is not a
+    # line to translate - whatever Latin letters remain are identifiers.
+    if (source_lang or "").lower().startswith(("ja", "zh", "ko")):
+        return bool(_CJK_LANGUAGE_RE.search(residue))
     return bool(_LANGUAGE_RE.search(residue))

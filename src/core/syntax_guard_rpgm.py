@@ -109,6 +109,8 @@ _RPGM_CODE_PATTERNS = (
     r'\\[{}.<>!gG$\\nNip^;|]|'           # Simple escapes (incl. \G currency, \| wait, \N)
     r'\b(?:if|en|req|cond|eval)\s*\((?:[^()\n]|\([^()\n]*\))+\)|'  # Choice condition plugins: if(s[1]), en(v[2]>=10)
     r'\b[vsVS]\[\d+\]|'                 # Variable/switch references: v[2], s[10]
+    r'<<[^<>\n]+>>|'                     # Script directives: <<GET_SOUNDTIME>> (before the single-<> tag rule,
+                                         # which matched the inner <GET_SOUNDTIME> and left the outer < > as text)
     r'</?[a-zA-Z][a-zA-Z0-9_\s:-]*>|'    # XML/plugin tags: <WordWrap>, <ChoiceHelp>, <page condition>
     r'\[(?:sad|happy|angry|sweat|confused|smirk|evil|thinking|doubt|grin|NOTE|custom)\d*\]|'  # Flavor tags
     r'\[[^\[\]]+\])'                     # Generic [variable]
