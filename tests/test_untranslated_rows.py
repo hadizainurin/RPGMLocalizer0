@@ -84,5 +84,39 @@ class NoTextRowsTests(unittest.TestCase):
         self.assertEqual((n_untr, n_none), (1, 3))
 
 
+class LoopResetTests(unittest.TestCase):
+    """Translated, saved, reset to Japanese on the next load, translated again:
+    120 rows per load, because \\E followed by an English letter was not
+    recognised as the same code as \\E followed by Japanese."""
+
+    def test_bare_code_before_english_letter_is_not_damage(self):
+        from src.core.translation_quality import is_damaged_translation
+        orig = "\\font[2]\\c[00]\\f[18]\\A+\\E同行条件\\N\\f[25]"
+        trans = "\\font[2]\\c[00]\\f[18]\\A+\\EParty Condition\\N\\f[25]"
+        self.assertFalse(is_damaged_translation(orig, trans, "ja", "en"))
+
+    def test_real_code_damage_still_caught(self):
+        from src.core.translation_quality import breaks_game
+        self.assertTrue(breaks_game("\\c[2]はい\\c[0]", "\\c[2]Yes"))
+        self.assertTrue(breaks_game("はい", "\\c[2]Yes"))
+        self.assertTrue(breaks_game("\\E同行", "\\NParty"))
+
+
+class SoundOnlyTests(unittest.TestCase):
+    def test_conversions(self):
+        from src.core.translation_quality import convert_sound_only, safe_to_reuse
+        for src, want in (("「っ！！！！！？」", '"!!!!!?"'), ("……っ！！！", "……!!!"),
+                          ("\u3000ーーー", "\u3000———"), ("\\c[2]っ！？\\c[0]", "\\c[2]!?\\c[0]")):
+            got = convert_sound_only(src, "en")
+            self.assertEqual(got, want)
+            self.assertTrue(safe_to_reuse(src, got, "en"))
+
+    def test_real_words_go_to_the_model(self):
+        from src.core.translation_quality import convert_sound_only
+        self.assertIsNone(convert_sound_only("にこー♪", "en"))
+        self.assertIsNone(convert_sound_only("！！！", "en"))       # nothing Japanese: no-text row
+        self.assertIsNone(convert_sound_only("っ！", "ja"))
+
+
 if __name__ == "__main__":
     unittest.main()

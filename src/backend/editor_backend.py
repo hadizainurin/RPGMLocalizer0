@@ -717,7 +717,7 @@ class AutoTranslateWorker(QThread):
         )
         from src.core.text_merger import TextMerger
         from src.core.glossary import Glossary
-        from src.core.translation_quality import safe_to_reuse, translation_issues
+        from src.core.translation_quality import convert_sound_only, safe_to_reuse, translation_issues
 
         source_lang: str = self.settings.get("source_lang", "auto")
         target_lang: str = self.settings.get("target_lang", "tr")
@@ -771,6 +771,7 @@ class AutoTranslateWorker(QThread):
         glossary_hits = 0
         skipped_by_rule = 0
         code_only_count = 0
+        sound_only_count = 0
         not_cached = 0
         rejected_count = 0
 
@@ -1069,6 +1070,14 @@ class AutoTranslateWorker(QThread):
                         code_only_count += 1
                         continue
 
+                    # Only a sound (「っ！！！？」, ーーー): the model returns it
+                    # unchanged, so it failed every run. Rendered here instead.
+                    sound = convert_sound_only(orig, target_lang)
+                    if sound is not None and not self.cache_only:
+                        sound_only_count += 1
+                        pairs.append((entry["id"], sound))
+                        continue
+
                     segments_by_id[entry["id"]] = segs
                     clean_by_id[entry["id"]] = clean
                     terms_by_id[entry["id"]] = term_map
@@ -1263,6 +1272,19 @@ class AutoTranslateWorker(QThread):
                 message += (
                     f" {flagged_count} need review - see the Warnings filter."
                 )
+            # Say what is left, so a finished run never looks like it skipped lines.
+            if not self.retranslate:
+                try:
+                    left = self.store.get_untranslated_count(
+                        file_filter=self.file_filter, category_filter=self.category_filter,
+                        search_query=self.search_query,
+                    )
+                except Exception:
+                    left = 0
+                if left:
+                    message += (f" {left} could not be translated (the model's reply was "
+                                "unusable twice) - they are still under Untranslated; "
+                                "run again or translate them by hand.")
             self.finished.emit(translated_count, message)
 
 

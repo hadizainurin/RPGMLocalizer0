@@ -394,26 +394,27 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
 
     @staticmethod
     def _parse_translations(content: Optional[str]) -> Optional[List[str]]:
-        """Parse raw model output into a list of translation strings."""
+        """Parse raw model output into a list of translation strings.
+
+        Strict on purpose. The old fallback "repaired" broken JSON, and in the
+        False Myth 2 run that put 162 corrupt lines into the game: the key
+        "t" or a lone "is" as a line's translation, '"]}```  (Note: ...' glued
+        to the end of a line, and neighbouring lines merged after an
+        unescaped quote. Now the first JSON value in the reply is decoded
+        exactly (a ```json fence or a note after it is fine); anything else is
+        a failed reply, which the caller splits and retries.
+        """
         if not content or not isinstance(content, str) or not content.strip():
             return None
 
         text = content.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
-
+        starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+        if not starts:
+            return None
         try:
-            parsed = json.loads(text)
-        except Exception:
-            outcome = parse_llm_array(text)
-            if not outcome or not outcome.items:
-                return None
-            parsed = outcome.items
+            parsed, _ = json.JSONDecoder().raw_decode(text[min(starts):])
+        except ValueError:
+            return None
 
         if isinstance(parsed, dict):
             # Accept the common wrapper keys emitted by local models. A custom
@@ -427,7 +428,9 @@ class OpenAICompatibleTranslator(SegmentBatchTranslator):
         elif not isinstance(parsed, list):
             return None
 
-        return [str(item) for item in parsed]
+        if not all(isinstance(item, str) for item in parsed):
+            return None
+        return list(parsed)
 
     #: Output cap = input characters x this, clamped to the bounds below. A
     #: translation is roughly the length of its source; without any cap a model

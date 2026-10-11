@@ -17,7 +17,11 @@ LINE_BREAK_TOLERANCE = 1
 #: Issues that make a line unsafe to write into game data. A changed line-break
 #: count is only a layout problem, so it is not on this list.
 GAME_BREAKING_ISSUES = ("empty translation", "game codes or tags changed", "format placeholders changed",
-                        "internal separator left in text")
+                        "internal separator left in text", "reply debris in text")
+
+#: Pieces of the model's reply format that ended up inside a line: '"]}```',
+#: "(Note: ...", a JSON key, a stray brace.
+_DEBRIS_RE = re.compile(r"```|\]\s*\}|\(Note:|\"t\"\s*:")
 
 #: The app's own segment markers. One in a translation means reassembly
 #: failed; the text around it is unreliable (codes moved, parts untranslated).
@@ -87,7 +91,31 @@ def safe_to_reuse(original: str, translated: str, target_lang: str) -> bool:
     """Gate for a stored translation that will be written without review."""
     return (not breaks_game(original, translated)
             and not still_untranslated(translated, target_lang)
-            and not looks_romanized(original, translated))
+            and not looks_romanized(original, translated)
+            and not looks_cut_off(original, translated))
+
+
+def _visible(text: str) -> str:
+    return "".join(seg.content for seg in segment_text(text or "") if seg.type == SegmentType.TEXT)
+
+
+_WORD_CHAR_RE = re.compile(r"[A-Za-z0-9\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def looks_cut_off(original: str, translated: str) -> bool:
+    """True if a machine translation is far too short to be the whole line.
+
+    English runs ~2x the characters of the Japanese it translates (1% of
+    real lines fall below 0.95x). Seen in the game: "t", " is ", " and " for
+    three-line messages - a broken reply split into the wrong pieces. Only
+    applied to machine output: a person may shorten a line on purpose.
+    """
+    src = _visible(original).strip()
+    src_words = len(_WORD_CHAR_RE.findall(src))
+    if src_words < 8 or not _CJK_RE.search(src) or convert_sound_only(original) is not None:
+        return False        # short lines ("「えっ…！！？」" -> "Eh…!!?") can be short in English too
+    words = _WORD_CHAR_RE.findall(_visible(translated))
+    return len(words) < max(3, int(0.3 * src_words))
 
 
 def is_damaged_translation(original: str, translated: str, source_lang: str, target_lang: str) -> bool:
@@ -104,7 +132,38 @@ def is_damaged_translation(original: str, translated: str, source_lang: str, tar
         or breaks_game(original, translated)
         or still_untranslated(translated, target_lang)
         or looks_romanized(original, translated)
+        or looks_cut_off(original, translated)
     )
+
+
+def _codes_changed(original: str, translated: str) -> bool:
+    """True if a game code of the original is missing, or a new one appeared.
+
+    Re-tokenising the translation was not reliable: a WOLF bare code followed
+    by an English letter reads differently from the same code followed by
+    Japanese ("\\E同行条件" vs "\\EParty Condition" - \\E is only a code
+    when no letter follows). Every reassembled line starting with \\E + a
+    letter was "damaged", reset to Japanese on the next load, translated
+    again, and reset again (120 rows per load in False Myth 2). So each code
+    run of the original is looked up in the translation as written.
+    """
+    runs = [seg.content for seg in segment_text(original) if seg.type == SegmentType.CODE]
+    rest = translated
+    for run in sorted(runs, key=len, reverse=True):
+        at = rest.find(run)
+        if at < 0:
+            return True
+        rest = rest[:at] + "\x00" + rest[at + len(run):]
+    for seg in segment_text(rest):
+        if seg.type != SegmentType.CODE:
+            continue
+        if "\x00" in seg.content:
+            continue        # a bracket pair around a known code: "[\\cself[12]]" from 【】
+        leftover = seg.content
+        if any(leftover in run for run in runs):
+            continue
+        return True
+    return False
 
 
 def translation_issues(original: str, translated: str) -> list[str]:
@@ -114,11 +173,16 @@ def translation_issues(original: str, translated: str) -> list[str]:
     issues: list[str] = []
     if _INTERNAL_MARKER_RE.search(translated) and not _INTERNAL_MARKER_RE.search(original):
         issues.append("internal separator left in text")
-    source_codes = Counter(segment.content for segment in segment_text(original) if segment.type == SegmentType.CODE)
-    translated_codes = Counter(segment.content for segment in segment_text(translated) if segment.type == SegmentType.CODE)
+    if ((_DEBRIS_RE.search(translated) and not _DEBRIS_RE.search(original))
+            or (("{" in translated or "}" in translated) and "{" not in original and "}" not in original)):
+        issues.append("reply debris in text")
+    # Every word gone, codes left: "\\c[02]\\f[24]\\A+\\n" for a three-line message.
+    if (_CJK_RE.search(_visible(original)) and convert_sound_only(original) is None
+            and not _WORD_CHAR_RE.search(_visible(translated))):
+        return ["empty translation"] + issues
     if looks_romanized(original, translated):
         issues.append("written in romaji, not translated")
-    if source_codes != translated_codes:
+    if _codes_changed(original, translated):
         issues.append("game codes or tags changed")
     elif original.count("<") != translated.count("<") or original.count(">") != translated.count(">"):
         # Angle brackets are script syntax in these engines (<<GET_SOUNDTIME>>);
@@ -140,3 +204,52 @@ def translation_issues(original: str, translated: str) -> list[str]:
     elif not source_breaks and target_breaks > LINE_BREAK_TOLERANCE:
         issues.append("line break count changed")
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Lines that are only a sound: 「っ！！！？」, ……っ！！！, ーーー
+# ---------------------------------------------------------------------------
+#: Small kana and the long-vowel mark carry no word on their own: っ is the
+#: catch of breath before a shout. A local model returns such a line unchanged,
+#: so it failed the "still Japanese" check on every run and stayed Untranslated.
+_SOUND_ONLY_DROP = set("っッぁぃぅぇぉゃゅょゎァィゥェォャュョヮ")
+_SOUND_ONLY_MAP = {
+    "ー": "—", "〜": "~", "～": "~", "！": "!", "？": "?", "、": ",", "。": ".",
+    "「": '"', "」": '"', "『": '"', "』": '"', "（": "(", "）": ")", "‥": "…",
+    "　": "　",
+}
+_SOUND_ONLY_KEEP = set("…・♪♫♥♡☆★!?~.,()\"' \t\r\n—-")
+
+
+def convert_sound_only(text: str, target_lang: str = "en") -> str | None:
+    """English rendering of a line that is only a sound and punctuation, else None.
+
+    「っ！！！？」 becomes "!!!?", ……っ！！！ becomes ……!!!, ーーー becomes ———.
+    Game codes are kept as they are. Lines with any real word return None and
+    go to the translator as usual.
+    """
+    if not text or (target_lang or "").lower().startswith(_CJK_TARGETS):
+        return None
+    out: list[str] = []
+    saw_japanese = False
+    for seg in segment_text(text):
+        if seg.type == SegmentType.CODE:
+            out.append(seg.content)
+            continue
+        for ch in seg.content:
+            if ch in _SOUND_ONLY_DROP:
+                saw_japanese = True
+            elif ch in _SOUND_ONLY_MAP:
+                saw_japanese = saw_japanese or ch in "ー〜"
+                out.append(_SOUND_ONLY_MAP[ch])
+            elif ch in _SOUND_ONLY_KEEP:
+                out.append(ch)
+            else:
+                return None     # a real character: let the model translate it
+    if not saw_japanese:
+        return None
+    result = "".join(out)
+    visible = [seg.content for seg in segment_text(result) if seg.type == SegmentType.TEXT]
+    if not "".join(visible).strip(" 　\"'\r\n\t"):
+        result = result.replace('""', '"…"') if '""' in result else result + "…"
+    return result
