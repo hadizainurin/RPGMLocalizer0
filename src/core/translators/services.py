@@ -38,6 +38,23 @@ from src.core.syntax_guard_rpgm import (
     validate_translation_integrity,
 )
 from src.core.text_segmenter import clean_text as segmenter_clean, reassemble as segmenter_reassemble
+from src.core.text_segmenter import TEXT_SEGMENT_SEPARATOR
+
+
+def _clean_for_engine(text: str) -> Tuple[str, Any]:
+    """Mask codes before inference, unless the caller already did.
+
+    The Translation Editor sends text it has already cleaned, with codes
+    replaced by |||TXTSEG||| markers, and puts the codes back itself. Cleaning
+    it a second time found no codes, so reassembly here expected ONE part and
+    kept only the text before the first marker: "Dungeon LV [|||TXTSEG|||]"
+    came back as "Dungeon LV [", and every line with a code in the middle lost
+    its ending. Pre-cleaned text is passed through; segments None means "the
+    caller reassembles".
+    """
+    if TEXT_SEGMENT_SEPARATOR in text:
+        return text, None
+    return segmenter_clean(text)
 from .base import BaseTranslator, TranslationEngine, TranslationRequest, TranslationResult
 
 try:
@@ -216,7 +233,12 @@ class SegmentBatchTranslator(BaseTranslator):
             orig, _, segs = cleaned_info[orig_idx]
             t_str = translated_clean[idx_in_trans] if translated_clean and idx_in_trans < len(translated_clean) else None
             success = t_str is not None
-            final_text = segmenter_reassemble(t_str, segs) if success else orig
+            if not success:
+                final_text = orig
+            elif segs is None:          # pre-cleaned: the caller reassembles
+                final_text = t_str
+            else:
+                final_text = segmenter_reassemble(t_str, segs)
 
             for req_idx in unique_map[orig]:
                 req = requests[req_idx]
@@ -254,7 +276,7 @@ class SegmentBatchTranslator(BaseTranslator):
         for i, req in enumerate(requests):
             unique_map.setdefault(req.get("text", ""), []).append(i)
 
-        cleaned_info = [(txt, *segmenter_clean(txt)) for txt in unique_map.keys()]
+        cleaned_info = [(txt, *_clean_for_engine(txt)) for txt in unique_map.keys()]
         needs_indices = self._populate_code_only(cleaned_info, unique_map, requests, results)
 
         live_progress = isinstance(self, HyMT2Translator)

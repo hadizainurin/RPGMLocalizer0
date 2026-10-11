@@ -1123,6 +1123,109 @@ class EditorStore:
                 self.conn.commit()
             return len(fixes)
 
+    def reset_cut_short_translations(self, stored_reply: Any) -> list[str]:
+        """Reset machine translations built from a reply that was cut short.
+
+        Until 2026-10-11 the local-LLM path kept only the text before the
+        first |||TXTSEG||| marker, so a line with a code in the middle lost
+        its ending ("Dungeon LV [" for ダンジョンLV【\\v[5]】). Those rows look
+        like normal translations; the evidence is the stored reply in the
+        run cache, which has fewer parts than the line has text pieces.
+
+        *stored_reply(clean_text)* returns that reply or None. Affected rows
+        go back to the original (marked unsaved if the game file holds the
+        bad text) so Translate All redoes them. Returns their original texts,
+        so the caller can drop the bad cache entries.
+        """
+        from src.core.text_segmenter import SegmentType, clean_text, parts_match
+        reset: list[str] = []
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT id, original_text, is_modified FROM entries "
+                "WHERE translation_source = 'auto' AND translated_text != original_text"
+            )
+            fixes = []
+            for r in cur.fetchall():
+                orig = r["original_text"]
+                clean, segs = clean_text(orig)
+                if sum(1 for seg in segs if seg.type == SegmentType.TEXT) < 2:
+                    continue
+                reply = stored_reply(clean)
+                if reply and not parts_match(reply, segs):
+                    fixes.append((orig, 0 if r["is_modified"] else 1, r["id"]))
+                    reset.append(orig)
+            if fixes:
+                cur.executemany(
+                    "UPDATE entries SET translated_text = ?, is_modified = ?, "
+                    "translation_source = '', has_warning = 0, warning_msg = '' WHERE id = ?",
+                    fixes,
+                )
+                self.conn.commit()
+        return reset
+
+    def apply_line_wrap(self, char_limit: int = 0) -> dict[str, int]:
+        """Re-break translated message lines that are too wide for the window.
+
+        Only WOLF message text is touched (see ``line_wrap.should_wrap``).
+        A row whose text changes gets the wrapped text and is marked unsaved,
+        so Save writes it into the game - this is also how translations that
+        were saved before wrapping existed get fixed. Lines are only split,
+        never joined, so running this on every load and Save is harmless.
+
+        *char_limit* is characters per line; 0 means learn the width from the
+        game's own Japanese lines. Returns ``{"wrapped": rows changed,
+        "too_tall": rows with more lines than the window shows, "limit": the
+        width used for the most common font size}``.
+        """
+        from src.core.line_wrap import DEFAULT_MAX_LINES, learn_width, should_wrap, wrap_text
+        result = {"wrapped": 0, "too_tall": 0, "limit": 0}
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT id, file_path, tag, original_text, translated_text, is_modified, "
+                "has_warning, warning_msg FROM entries"
+            )
+            rows = [r for r in cur.fetchall() if should_wrap(r["file_path"], r["tag"])]
+            if not rows:
+                return result
+            width = None if char_limit > 0 else learn_width(r["original_text"] for r in rows)
+            if char_limit <= 0 and width is None:
+                return result
+            result["limit"] = char_limit if char_limit > 0 else width.limit_for("")
+            tall_note = "More lines than the message window shows"
+            updates: list[tuple] = []
+            for r in rows:
+                orig, text = r["original_text"], r["translated_text"]
+                if not text or text == orig:
+                    continue
+                limit = char_limit if char_limit > 0 else width.limit_for(orig)
+                new = wrap_text(text, limit)
+                lines = new.count("\n") + 1
+                tall = lines > max(DEFAULT_MAX_LINES, orig.count("\n") + 1)
+                msg = r["warning_msg"] or ""
+                if not tall and tall_note in msg:
+                    msg = " | ".join(part for part in msg.split(" | ")
+                                     if not part.startswith(tall_note))
+                if tall:
+                    result["too_tall"] += 1
+                    if tall_note not in msg:
+                        msg = f"{msg} | {tall_note} ({lines} lines)" if msg else f"{tall_note} ({lines} lines)"
+                if new == text and msg == (r["warning_msg"] or ""):
+                    continue
+                if new != text:
+                    result["wrapped"] += 1
+                updates.append((new, 1 if new != text else r["is_modified"], lines,
+                                1 if msg else 0, msg, r["id"]))
+            if updates:
+                cur.executemany(
+                    "UPDATE entries SET translated_text = ?, is_modified = ?, line_count = ?, "
+                    "has_warning = ?, warning_msg = ? WHERE id = ?",
+                    updates,
+                )
+                self.conn.commit()
+        return result
+
     def bulk_apply_auto_translations(
         self,
         translations: list[tuple[int, str]],

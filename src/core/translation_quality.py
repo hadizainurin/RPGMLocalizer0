@@ -16,7 +16,12 @@ LINE_BREAK_TOLERANCE = 1
 
 #: Issues that make a line unsafe to write into game data. A changed line-break
 #: count is only a layout problem, so it is not on this list.
-GAME_BREAKING_ISSUES = ("empty translation", "game codes or tags changed", "format placeholders changed")
+GAME_BREAKING_ISSUES = ("empty translation", "game codes or tags changed", "format placeholders changed",
+                        "internal separator left in text")
+
+#: The app's own segment markers. One in a translation means reassembly
+#: failed; the text around it is unreliable (codes moved, parts untranslated).
+_INTERNAL_MARKER_RE = re.compile(r"TXT\s*SEG|RPGMSEP|SEP777|ТХЦЭГ|THCEG", re.IGNORECASE)
 
 
 def breaks_game(original: str, translated: str) -> bool:
@@ -107,6 +112,8 @@ def translation_issues(original: str, translated: str) -> list[str]:
     if not translated or not translated.strip():
         return ["empty translation"]
     issues: list[str] = []
+    if _INTERNAL_MARKER_RE.search(translated) and not _INTERNAL_MARKER_RE.search(original):
+        issues.append("internal separator left in text")
     source_codes = Counter(segment.content for segment in segment_text(original) if segment.type == SegmentType.CODE)
     translated_codes = Counter(segment.content for segment in segment_text(translated) if segment.type == SegmentType.CODE)
     if looks_romanized(original, translated):

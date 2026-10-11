@@ -54,6 +54,11 @@ class SettingsBackend(QObject):
             # Requests sent to the local LLM at once. Must match llama-server's
             # --parallel; each slot gets ctx-size / parallel tokens of context.
             "local_llm_parallel": 1,
+            # Translation Editor: re-break message lines that are too wide for
+            # the game's window when saving (WOLF). 0 chars = learn the width
+            # from the game's own Japanese lines.
+            "editor_wordwrap": True,
+            "editor_wrap_chars": 0,
             "progress_throttle_ms": 250,
             "use_multi_endpoint": True,
             "enable_lingva_fallback": True,
@@ -503,6 +508,22 @@ class SettingsBackend(QObject):
     @localLlmParallel.setter
     def localLlmParallel(self, val: int) -> None:
         self._set("local_llm_parallel", max(1, min(8, int(val))))
+
+    @pyqtProperty(bool, notify=settingsChanged)
+    def editorWordwrap(self) -> bool:
+        return bool(self._get("editor_wordwrap", True))
+
+    @editorWordwrap.setter
+    def editorWordwrap(self, val: bool) -> None:
+        self._set("editor_wordwrap", bool(val))
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def editorWrapChars(self) -> int:
+        return max(0, min(200, int(self._get("editor_wrap_chars", 0) or 0)))
+
+    @editorWrapChars.setter
+    def editorWrapChars(self, val: int) -> None:
+        self._set("editor_wrap_chars", max(0, min(200, int(val))))
 
     @pyqtProperty(int, notify=settingsChanged)
     def localLlmMaxTokens(self) -> int:

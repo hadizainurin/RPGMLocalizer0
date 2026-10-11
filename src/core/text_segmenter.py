@@ -35,11 +35,22 @@ logger = logging.getLogger(__name__)
 TEXT_SEGMENT_SEPARATOR = "|||TXTSEG|||"
 
 # Canonical form for splitting (handles optional spaces and transliterations like ТХЦЭГь/THCEG)
+# The marker word itself, as models have been seen to return it.
+_TSS_WORD = r"(?:TXT\s*SEG|TEXT\s*SEG|ТХЦЭГ\w*|THCEG)"
+# Local models sometimes drop pipes: "[|||TXTSEG||+|||TXTSEG|]" came back for
+# "【|||TXTSEG|||＋|||TXTSEG|||】" (False Myth 2). Requiring exactly three on
+# each side made the split fail, the fallback placed every code at the end,
+# and the half-pipes slipped past the scrubber into the game. So the marker
+# word with 1-3 pipes on each side counts as a separator.
 _TSS_CANONICAL_RE = re.compile(
-    r"\|\s*\|\s*\|(?:\s*[A-Za-zА-Яа-я0-9_\s]{3,15}\s*)\|\s*\|\s*\|"
+    r"\|{1,3}\s*" + _TSS_WORD + r"\s*\|{1,3}"
+    r"|\|\s*\|\s*\|(?:\s*[A-Za-zА-Яа-я0-9_\s]{3,15}\s*)\|\s*\|\s*\|",
+    re.IGNORECASE,
 )
 _TSS_SCRUB_RE = re.compile(
-    r"\|\s*\|\s*\|[^|\n]*\|\s*\|\s*\||\|{3}[^|\n]*\|{3}"
+    r"\|{0,3}\s*" + _TSS_WORD + r"\s*\|{0,3}"
+    r"|\|\s*\|\s*\|[^|\n]*\|\s*\|\s*\||\|{3}[^|\n]*\|{3}",
+    re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,6 +209,19 @@ def reassemble(translated_clean: str, segments: List[Segment]) -> str:
     return res
 
 
+def parts_match(translated_clean: str, segments: List[Segment]) -> bool:
+    """True if *translated_clean* splits into one part per TEXT segment.
+
+    When it does not, reassemble() can only guess where the codes go, and a
+    reply that was cut short at a marker is indistinguishable from a short
+    translation afterwards. Callers use this to refuse such a reply.
+    """
+    expected = sum(1 for s in segments if s.type == SegmentType.TEXT)
+    if expected <= 1:
+        return True
+    return len(_split_clean(translated_clean or "", expected)) == expected
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -218,9 +242,12 @@ def _append_code(segments: List[Segment], content: str) -> None:
 
 def _split_clean(text: str, expected: int) -> List[str]:
     parts = _TSS_CANONICAL_RE.split(text)
+    if len(parts) == expected:
+        return parts            # an empty part is a valid (empty) translation
     parts = [p for p in parts if p != ""]
-    if len(parts) >= expected:
-        return parts[:expected]
+    # More parts than expected used to be cut to the first N, silently
+    # dropping the rest of the line. Returning them all makes the caller fall
+    # back to proportional placement, which keeps every word.
     if parts:
         return parts
     return [text]

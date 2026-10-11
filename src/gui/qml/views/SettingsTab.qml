@@ -803,6 +803,31 @@ Item {
                             value: settingsBackend.wordwrapLimitStandard
                             onMoved: (val) => { settingsBackend.wordwrapLimitStandard = Math.round(val) }
                         }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
+                        ToggleRow {
+                            label: localeManager.strings.settings.editor_wordwrap_label || "Wrap Long Lines on Save (Translation Editor)"
+                            desc: localeManager.strings.settings.editor_wordwrap_desc || "Breaks translated message lines that are too wide for the game's message window. WOLF RPG only for now."
+                            checked: settingsBackend.editorWordwrap
+                            onToggled: (val) => { settingsBackend.editorWordwrap = val }
+                        }
+                        StyledSlider {
+                            label: localeManager.strings.settings.editor_wrap_chars_label || "Characters per Line"
+                            from: 0; to: 120; step: 1
+                            editable: true
+                            enabled: settingsBackend.editorWordwrap
+                            value: settingsBackend.editorWrapChars
+                            onMoved: (val) => { settingsBackend.editorWrapChars = Math.round(val) }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: settingsBackend.editorWrapChars === 0
+                                  ? (localeManager.strings.settings.editor_wrap_auto_hint || "0 = automatic: the width is learned from the game's own Japanese lines. Applied when a project is opened and on Save; lines are only split, never joined.")
+                                  : (localeManager.strings.settings.editor_wrap_manual_hint || "Lines longer than this many characters are broken at a space. Lower it if text still runs off the window; raise it if messages get too tall.")
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
                         ToggleRow {
                             label: localeManager.strings.settings.translate_notes_label
                             desc: localeManager.strings.settings.translate_notes_desc

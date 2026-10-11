@@ -196,6 +196,84 @@ class EditorTableModel(QAbstractTableModel):
                 break
 
 
+def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) -> dict[str, int]:
+    """Run the message word-wrap pass if it is enabled; never raises."""
+    if not store or not settings.get("editor_wordwrap", True):
+        return {"wrapped": 0, "too_tall": 0, "limit": 0}
+    try:
+        result = store.apply_line_wrap(int(settings.get("editor_wrap_chars", 0) or 0))
+    except Exception as exc:  # a wrap problem must never block loading or saving
+        if logger:
+            logger.warning("Word-wrap pass failed: %s", exc)
+        return {"wrapped": 0, "too_tall": 0, "limit": 0}
+    if not isinstance(result, dict):   # store without a wrap pass (or a stand-in)
+        return {"wrapped": 0, "too_tall": 0, "limit": 0}
+    if logger and (result["wrapped"] or result["too_tall"]):
+        logger.info("Word-wrap (%d chars/line): %d rows wrapped, %d taller than the window.",
+                    result["limit"], result["wrapped"], result["too_tall"])
+    return result
+
+
+def reset_cut_short(store: Any, settings: dict[str, Any], logger: Any = None) -> int:
+    """Find rows translated from a cut-short reply, reset them, purge the caches.
+
+    Never raises: this is a repair pass and must not block loading.
+    """
+    try:
+        from src.core.cache import TranslationCache, get_cache
+        from src.core.text_segmenter import TEXT_SEGMENT_SEPARATOR
+        project = settings.get("project_path", "")
+        pid = get_project_id(project)
+        target = settings.get("target_lang", "en")
+        source = settings.get("source_lang", "auto")
+        keys = list(dict.fromkeys([source, "auto", "ja"]))
+        run_cache = get_cache(cache_dir=get_cache_dir(pid), project_id=pid, target_lang=target)
+        if run_cache is None:
+            return 0
+
+        def stored_reply(clean: str):
+            for lang in keys:
+                hit = run_cache.get(clean, lang, target)
+                if hit:
+                    return hit
+            return None
+
+        reset = store.reset_cut_short_translations(stored_reply)
+        if not reset:
+            return 0
+        from src.core.text_segmenter import clean_text
+        saved_cache = TranslationCache(cache_dir=os.fspath(get_cache_dir(pid, target)),
+                                       project_id=pid, target_lang=target)
+        for orig in reset:
+            clean = clean_text(orig)[0]
+            for lang in keys:
+                run_cache.delete(clean, lang, target)
+                saved_cache.delete(orig, lang, target)
+        run_cache.save()
+        saved_cache.save()
+        if logger:
+            logger.info("Reset %d translations cut short at a game code.", len(reset))
+        return len(reset)
+    except Exception as exc:
+        if logger:
+            logger.warning("Cut-short translation check failed: %s", exc)
+        return 0
+
+
+def _cut_short_message(count: int) -> str:
+    if not count:
+        return ""
+    return (f" {count} translations that had lost their text after a game code were "
+            "reset to the original - run Translate All to redo them.")
+
+
+def _wrap_message(result: dict[str, int]) -> str:
+    if not result.get("wrapped"):
+        return ""
+    return (f" {result['wrapped']} long translated lines were wrapped to fit the message "
+            f"window ({result['limit']} characters per line) - press Save to write them.")
+
+
 class ScanWorker(QThread):
     """Background worker for non-blocking project scanning and database indexing."""
 
@@ -292,6 +370,8 @@ class ScanWorker(QThread):
                     message += (f" {reverted} machine translations with damaged game codes "
                                 "were reset to the original - press Save to repair the game files.")
                     self.logger.info("Reset %d damaged machine translations on quick load.", reverted)
+                message += _cut_short_message(reset_cut_short(self.store, {**self.settings, "project_path": self.project_path}, self.logger))
+                message += _wrap_message(apply_editor_wrap(self.store, self.settings, self.logger))
                 self.finished.emit(True, message, total)
                 return
 
@@ -355,6 +435,8 @@ class ScanWorker(QThread):
                 message += (f" {reverted} machine translations with damaged game codes "
                             "were reset to the original - press Save to repair the game files.")
                 self.logger.info("Reset %d damaged machine translations on load.", reverted)
+            message += _cut_short_message(reset_cut_short(self.store, {**self.settings, "project_path": self.project_path}, self.logger))
+            message += _wrap_message(apply_editor_wrap(self.store, self.settings, self.logger))
             self.finished.emit(True, message, total_loaded)
         except Exception as exc:
             self.finished.emit(False, f"Scan error: {exc}", 0)
@@ -629,7 +711,7 @@ class AutoTranslateWorker(QThread):
         from src.core.translator import create_translator
         from src.core.translators.base import TranslationRequest
         from src.core.text_segmenter import (
-            SegmentType, clean_text, has_translatable_content, reassemble,
+            SegmentType, clean_text, has_translatable_content, parts_match, reassemble,
         )
         from src.core.text_merger import TextMerger
         from src.core.glossary import Glossary
@@ -883,6 +965,25 @@ class AutoTranslateWorker(QThread):
                     segs = segments_by_id.get(eid)
                     if any(token not in translated for token in terms_by_id.get(eid, {})):
                         return
+                    # One part per text piece, or the codes can only be guessed
+                    # into place - and a reply cut short at a marker ("Dungeon
+                    # LV [" for "ダンジョンLV【|||TXTSEG|||】") looks like a
+                    # normal short line once reassembled.
+                    split_ok = not segs or parts_match(translated, segs)
+                    if not split_ok and (not memoize or self.cache_only):
+                        # A stored one: refuse it so it is purged and redone.
+                        if self.cache_only:
+                            rejected_count += 1
+                        elif eid not in retry_ids:
+                            retry_ids.append(eid)
+                        return "rejected"
+                    if not split_ok and not allow_issues:
+                        if eid not in retry_ids:
+                            retry_ids.append(eid)
+                        return
+                    if not split_ok:
+                        flagged_count += 1
+                        memoize = False
                     restored = reassemble(translated, segs) if segs else translated
                     if glossary:
                         restored = glossary.restore_terms(restored, terms_by_id.get(eid, {}))
@@ -2383,6 +2484,15 @@ class EditorBackend(QObject):
         # Must be the unsaved count, not the hand-edit count: machine
         # translations are unsaved rows too, and gating on "modified" made Save
         # silently refuse to write anything after an auto-translate run.
+        # Wrap first: rows saved before wrapping existed (or with a different
+        # width) become unsaved here, so a plain Save fixes them in the game.
+        if self._store:
+            settings = self.settings_backend.get_dict() if hasattr(self.settings_backend, "get_dict") else {}
+            wrap_result = apply_editor_wrap(self._store, settings, self.logger)
+            if wrap_result["wrapped"]:
+                self._refresh_stats()
+        else:
+            wrap_result = {"wrapped": 0, "too_tall": 0, "limit": 0}
         if not self._store or self._unsaved_count == 0:
             self.saveFinished.emit(True, "No changes to save.")
             return
@@ -2512,6 +2622,9 @@ class EditorBackend(QObject):
             if failures:
                 detail = "; ".join(f"{name}: {why}" for name, why in failures[:2])
                 message += f" {len(failures)} file(s) failed - {detail}"
+            if wrap_result.get("too_tall"):
+                message += (f" {wrap_result['too_tall']} wrapped messages have more lines than "
+                            "the message window shows - see the Warnings filter.")
             self.saveFinished.emit(len(failures) == 0, message)
         except Exception as exc:
             self.logger.error(f"Error during editor save: {exc}")
