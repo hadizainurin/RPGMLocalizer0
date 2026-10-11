@@ -371,6 +371,7 @@ class ScanWorker(QThread):
                                 "were reset to the original - press Save to repair the game files.")
                     self.logger.info("Reset %d damaged machine translations on quick load.", reverted)
                 message += _cut_short_message(reset_cut_short(self.store, {**self.settings, "project_path": self.project_path}, self.logger))
+                self.store.classify_no_text(self.settings.get("source_lang", "auto"))
                 message += _wrap_message(apply_editor_wrap(self.store, self.settings, self.logger))
                 self.finished.emit(True, message, total)
                 return
@@ -436,6 +437,7 @@ class ScanWorker(QThread):
                             "were reset to the original - press Save to repair the game files.")
                 self.logger.info("Reset %d damaged machine translations on load.", reverted)
             message += _cut_short_message(reset_cut_short(self.store, {**self.settings, "project_path": self.project_path}, self.logger))
+            self.store.classify_no_text(self.settings.get("source_lang", "auto"))
             message += _wrap_message(apply_editor_wrap(self.store, self.settings, self.logger))
             self.finished.emit(True, message, total_loaded)
         except Exception as exc:
@@ -1490,6 +1492,7 @@ class EditorBackend(QObject):
         self._translated_count: int = 0
         self._warning_count: int = 0
         self._untranslated_count: int = 0
+        self._no_text_count: int = 0
 
         # Detail selection
         self._selected_entry_id: int = 0
@@ -1587,6 +1590,11 @@ class EditorBackend(QObject):
     @pyqtProperty(int, notify=statsChanged)
     def untranslatedCount(self) -> int:
         return self._untranslated_count
+
+    @pyqtProperty(int, notify=statsChanged)
+    def noTextCount(self) -> int:
+        """Rows with nothing to translate (only codes, numbers, punctuation)."""
+        return self._no_text_count
 
     @pyqtProperty(bool, notify=hasUnsavedChangesChanged)
     def hasUnsavedChanges(self) -> bool:
@@ -1865,6 +1873,7 @@ class EditorBackend(QObject):
         self._translated_count = stats.get("translated", 0)
         self._warning_count = stats.get("warnings", 0)
         self._untranslated_count = stats.get("untranslated", 0)
+        self._no_text_count = stats.get("no_text", 0)
         self.statsChanged.emit()
         self.hasUnsavedChangesChanged.emit()
 

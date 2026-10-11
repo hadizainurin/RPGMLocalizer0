@@ -1009,7 +1009,8 @@ Item {
                                 { key: "translated", label: localeManager.strings.editor.status_chip_translated + " (" + editorBackend.translatedCount + ")" },
                                 { key: "modified", label: localeManager.strings.editor.status_chip_modified + " (" + editorBackend.modifiedCount + ")" },
                                 { key: "warnings", label: localeManager.strings.editor.status_chip_warnings + " (" + editorBackend.warningCount + ")" },
-                                { key: "untranslated", label: localeManager.strings.editor.status_chip_untranslated + " (" + editorBackend.untranslatedCount + ")" }
+                                { key: "untranslated", label: localeManager.strings.editor.status_chip_untranslated + " (" + editorBackend.untranslatedCount + ")" },
+                                { key: "no_text", label: (localeManager.strings.editor.status_chip_no_text || "No Text") + " (" + editorBackend.noTextCount + ")" }
                             ]
                             delegate: Rectangle {
                                 height: 28

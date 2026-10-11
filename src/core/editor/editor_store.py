@@ -168,7 +168,8 @@ class EditorStore:
                 has_warning INTEGER DEFAULT 0,
                 warning_msg TEXT DEFAULT '',
                 manual_wrap INTEGER DEFAULT 0,
-                translation_source TEXT DEFAULT ''
+                translation_source TEXT DEFAULT '',
+                no_text INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_entries_file ON entries(file_name);
@@ -238,6 +239,11 @@ class EditorStore:
                         ELSE 'auto'
                     END
                 """)
+            # no_text marks rows with nothing to translate (only codes, digits,
+            # punctuation: "\\c[05]", "？？？", "2"). They used to sit under
+            # Untranslated forever and were re-checked on every run.
+            if entry_cols and "no_text" not in entry_cols:
+                cur.execute("ALTER TABLE entries ADD COLUMN no_text INTEGER DEFAULT 0")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(translation_source)"
             )
@@ -560,7 +566,9 @@ class EditorStore:
             elif status_filter == "warnings":
                 clauses.append("entries.has_warning = 1")
             elif status_filter == "untranslated":
-                clauses.append("(entries.translated_text = entries.original_text OR entries.translated_text = '')")
+                clauses.append("(entries.translated_text = entries.original_text OR entries.translated_text = '') AND entries.no_text = 0")
+            elif status_filter == "no_text":
+                clauses.append("entries.no_text = 1 AND (entries.translated_text = entries.original_text OR entries.translated_text = '')")
             elif status_filter == "translated":
                 # Machine-translated and not since edited by hand.
                 clauses.append(
@@ -978,11 +986,14 @@ class EditorStore:
                     COUNT(*),
                     SUM(CASE WHEN is_modified = 1 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN has_warning = 1 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN translated_text = original_text OR translated_text = '' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN (translated_text = original_text OR translated_text = '')
+                                  AND no_text = 0 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN translation_source = 'auto'
                                   AND translated_text != original_text
                                   AND translated_text != '' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN translation_source = 'manual' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN translation_source = 'manual' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN no_text = 1 AND (translated_text = original_text
+                                  OR translated_text = '') THEN 1 ELSE 0 END)
                 FROM entries
             """)
             row = cur.fetchone()
@@ -995,6 +1006,7 @@ class EditorStore:
                 "warnings": row[2] or 0,
                 "untranslated": row[3] or 0,
                 "translated": row[4] or 0,   # machine output, not since edited
+                "no_text": row[6] or 0,      # only codes/symbols: nothing to translate
             }
 
     def _build_untranslated_clauses(
@@ -1013,7 +1025,7 @@ class EditorStore:
         clauses: list[str] = []
         if not include_translated:
             clauses.append(
-                "(entries.translated_text = entries.original_text OR entries.translated_text = '')"
+                "(entries.translated_text = entries.original_text OR entries.translated_text = '') AND entries.no_text = 0"
             )
         params: list[Any] = []
 
@@ -1122,6 +1134,28 @@ class EditorStore:
                 )
                 self.conn.commit()
             return len(fixes)
+
+    def classify_no_text(self, source_lang: str = "auto") -> int:
+        """Mark rows whose original has nothing to translate. Returns their count.
+
+        Same rule the translator uses to skip a line (has_translatable_content):
+        a line of only codes, numbers or punctuation is complete as it is.
+        """
+        from src.core.text_segmenter import has_translatable_content
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT id, original_text, no_text FROM entries")
+            changes = []
+            total = 0
+            for r in cur.fetchall():
+                flag = 0 if has_translatable_content(r["original_text"], source_lang) else 1
+                total += flag
+                if flag != (r["no_text"] or 0):
+                    changes.append((flag, r["id"]))
+            if changes:
+                cur.executemany("UPDATE entries SET no_text = ? WHERE id = ?", changes)
+                self.conn.commit()
+            return total
 
     def reset_cut_short_translations(self, stored_reply: Any) -> list[str]:
         """Reset machine translations built from a reply that was cut short.

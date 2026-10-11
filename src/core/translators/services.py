@@ -66,6 +66,59 @@ logger = logging.getLogger("LLMServices")
 
 
 
+#: What the model sees in place of a game code: {1}, {2}, ... The editor's
+#: "|||TXTSEG|||" marker was mangled by local models in 59% of lines that
+#: had one (False Myth 2 payload log, 2026-10-11: "TXTSEグ", "TXTセグ",
+#: "TXTSEG=", "TXTSE", dropped pipes), and every such line failed and stayed
+#: untranslated. Short numbered tokens are the usual placeholder form in
+#: translation data, so models copy them reliably.
+_MODEL_TOKEN_RE = re.compile(r"(?:\{+|\[|<)\s*(\d{1,3})\s*(?:\}+|\]|>)")
+_SOURCE_TOKEN_RE = re.compile(r"[{\[<]\s*\d{1,3}\s*[}\]>]")
+MARKER_TOKEN_NOTE = (
+    "Some lines contain numbered tokens like {1}, {2}. Each stands for a game "
+    "code: copy every token exactly once, unchanged, next to the words it belongs to."
+)
+
+
+def encode_markers(text: str) -> Tuple[str, int]:
+    """Replace the editor's segment markers with {1}, {2}, ... for the model.
+
+    Returns the text to send and the number of tokens (0 = unchanged). A line
+    that already contains something token-like is left as it was, so a
+    literal "[2]" in the game text can never be mistaken for a code.
+    """
+    if not text or TEXT_SEGMENT_SEPARATOR not in text or _SOURCE_TOKEN_RE.search(text):
+        return text, 0
+    parts = text.split(TEXT_SEGMENT_SEPARATOR)
+    out = parts[0]
+    for i, part in enumerate(parts[1:], 1):
+        out += "{%d}%s" % (i, part)
+    return out, len(parts) - 1
+
+
+def decode_markers(reply: Optional[str], count: int) -> Optional[str]:
+    """Turn {1}..{count} in a reply back into segment markers.
+
+    Every token must appear exactly once. Otherwise the reply comes back
+    without markers, which the editor sees as a wrong part count and retries
+    - guessing where the codes go would put them in the wrong place.
+    Tokens the model moved (English word order) are kept in the order they
+    appear; the codes still go in the original order, which can shift a
+    colour by a word but never breaks the line.
+    """
+    if reply is None or count <= 0:
+        return reply
+    found = [m for m in _MODEL_TOKEN_RE.finditer(reply) if 1 <= int(m.group(1)) <= count]
+    if sorted(int(m.group(1)) for m in found) != list(range(1, count + 1)):
+        return _MODEL_TOKEN_RE.sub("", reply)
+    pieces, pos = [], 0
+    for m in found:
+        pieces.append(reply[pos:m.start()])
+        pos = m.end()
+    pieces.append(reply[pos:])
+    return TEXT_SEGMENT_SEPARATOR.join(pieces)
+
+
 #: A character repeated 4+ times in a row. Non-ASCII (kana, ー, ～, ！, fullwidth)
 #: plus ASCII ! ? ~ - never "|", so the |||TXTSEG||| separators are safe.
 _ELONGATION_RE = re.compile(r"([^\x00-\x7F]|[!?~])\1{3,}")
@@ -623,8 +676,18 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         await self._ensure_model()
         # Only what is sent changes; results stay positional, so cache keys
         # and reassembly are untouched.
-        sent = [squeeze_elongation(t) for t in clean_texts]
-        return await super()._translate_clean_texts(sent, source_lang, target_lang)
+        sent, counts = [], []
+        for text in clean_texts:
+            encoded, count = encode_markers(squeeze_elongation(text))
+            sent.append(encoded)
+            counts.append(count)
+        replies = await super()._translate_clean_texts(sent, source_lang, target_lang)
+        if not replies or len(replies) != len(counts):
+            return replies
+        decoded = [decode_markers(r, c) for r, c in zip(replies, counts)]
+        if isinstance(replies, _OutputLimitHit):
+            return _OutputLimitHit(decoded)
+        return decoded
 
     #: Set when the server rejects response_format; then plain JSON prompting.
     _structured_output_unsupported = False
@@ -708,12 +771,14 @@ class LocalLLMTranslator(OpenAICompatibleTranslator):
         return text
 
     def _build_system_prompt(self, target_lang: str, source_lang: str = "auto") -> str:
-        base = super()._build_system_prompt(target_lang, source_lang)
+        base = f"{super()._build_system_prompt(target_lang, source_lang)} {MARKER_TOKEN_NOTE}"
         if not self.system_prompt:
             return base
         custom = self._render_custom_prompt(source_lang, target_lang)
         if self.prompt_mode == "override":
-            return custom
+            # The token contract is part of the protocol, not of the style:
+            # without it the model has no reason to keep {1}, {2}.
+            return f"{custom}\n\n{MARKER_TOKEN_NOTE}"
         return f"{custom}\n\n{base}"
 
 

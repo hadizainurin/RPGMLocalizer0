@@ -73,8 +73,9 @@ class PromptModeTests(unittest.TestCase):
 
     def test_auto_source_has_readable_name(self) -> None:
         tr = _make(system_prompt="From {source} to {target}.", prompt_mode="override")
-        self.assertEqual(
-            tr._build_system_prompt("en", "auto"), "From the source language to English."
+        # Override mode still gets the {1}/{2} token note appended (protocol, not style).
+        self.assertTrue(
+            tr._build_system_prompt("en", "auto").startswith("From the source language to English.")
         )
 
     def test_invalid_mode_falls_back_to_append(self) -> None:

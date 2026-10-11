@@ -309,6 +309,7 @@
     "status_chip_modified": "✎ Edited by me",
     "status_chip_warnings": "Warnings",
     "status_chip_untranslated": "Untranslated",
+    "status_chip_no_text": "No Text",
     "empty_no_folder_title": "No Game Folder Selected Yet",
     "empty_no_data_title": "No RPG Maker Data Found",
     "empty_no_match_title": "No Text Matches Filters",
