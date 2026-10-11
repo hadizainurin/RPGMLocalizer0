@@ -68,6 +68,86 @@ class FontSizeTests(unittest.TestCase):
         self.assertEqual(font_size("\\c[02]\\f[24]\\A+ははは"), 24)
 
 
+class ReflowTests(unittest.TestCase):
+    """False Myth 2 playtest: a 4-line original became 7 lines once wrapped
+    (the model's own breaks each left a short line), and the last line fell
+    below the window."""
+    ORIG = ("ヴェルカ\n「…でも後悔はしないわ。どんな手を使っても生き延びてやる。\n"
+            "\u3000所詮、弱者は淘汰されるのが世の常なの…っ。\n"
+            "\u3000無防備なのが悪いんだから…あの女もしかりよ…っ！」")
+    EN = ('Velka\n"…But I won\'t regret it. I\'ll survive no matter what it takes.\n'
+          'After all, the weak are always weeded out… That\'s just how the world works…\n'
+          'It\'s their fault for being defenseless… Just like that woman…!"')
+
+    def test_tall_message_is_reflowed_and_keeps_the_speaker(self):
+        from src.core.line_wrap import has_speaker_line
+        self.assertTrue(has_speaker_line(self.ORIG))
+        plain = wrap_text(self.EN, 53)
+        flowed = wrap_text(self.EN, 53, 4, keep_first=True)
+        self.assertEqual(plain.count("\n") + 1, 7)
+        self.assertEqual(flowed.count("\n") + 1, 5)
+        self.assertEqual(flowed.split("\n")[0], "Velka")
+        self.assertTrue(all(text_width(l) <= 53 for l in flowed.split("\n")))
+        self.assertEqual(wrap_text(flowed, 53, 4, keep_first=True), flowed)   # stable
+
+    def test_message_that_fits_keeps_its_own_breaks(self):
+        text = "Yes.\nNo.\nMaybe."
+        self.assertEqual(wrap_text(text, 53, 4), text)
+
+
+class FontShrinkTests(unittest.TestCase):
+    LONG = ('"…Sorry, even Jass has never seen a case of heart-sealing before.\n'
+            'Needless to say, the arts and drugs that do this to people are the most '
+            'forbidden of all taboos… so nobody really studies them, you know.')
+
+    def test_too_tall_message_gets_just_small_enough_font(self):
+        from src.core.line_wrap import fit_message
+        text, lines, size = fit_message(self.LONG, 53, 4, False, 24, 18)
+        self.assertLess(size, 24)
+        self.assertGreaterEqual(size, 18)
+        self.assertTrue(text.startswith("\\f[%d]" % size))
+        self.assertLessEqual(lines, int(4 * 24 / size))
+
+    def test_existing_size_codes_are_scaled(self):
+        from src.core.line_wrap import scale_font
+        self.assertEqual(scale_font("\\c[2]\\f[24]\\A+Hi\\f[17]note", 24, 20),
+                         "\\c[2]\\f[20]\\A+Hi\\f[14]note")
+
+    def test_shrink_is_undone_before_refitting(self):
+        from src.core.line_wrap import fit_message, restore_font_codes
+        orig = "「…ごめん、ジャスも封心の症例は初めてなんだ。」"
+        shrunk, _, _ = fit_message(self.LONG, 53, 4, False, 24, 18)
+        self.assertEqual(restore_font_codes(orig, shrunk).count("\\f["), 0)
+        again, _, _ = fit_message(restore_font_codes(orig, shrunk), 53, 4, False, 24, 18)
+        self.assertEqual(again, shrunk)                      # stable across loads
+
+    def test_size_change_is_not_code_damage(self):
+        from src.core.translation_quality import is_damaged_translation
+        self.assertFalse(is_damaged_translation("\\c[02]\\f[24]\\A+ははは、そうだね",
+                                                "\\c[02]\\f[20]\\A+Hahaha, that's right", "ja", "en"))
+        self.assertFalse(is_damaged_translation("「ははは、そうだね」", "\\f[20]\"Hahaha, right\"", "ja", "en"))
+
+    def test_store_pass_shrinks_and_counts(self):
+        store = EditorStore(":memory:")
+        orig = "「" + "あ" * 28 + "\n" + "い" * 20 + "」"
+        store.load_entries({"/g/CommonEvent.dat": [("e/1", orig, "string_op")] +
+                            [(f"x/{i}", "\\f[24]" + "う" * 28, "string_op") for i in range(20)]})
+        cur = store.conn.cursor()
+        cur.execute("UPDATE entries SET translated_text = ?, translation_source = 'auto' "
+                    "WHERE json_path = 'e/1'", (self.LONG,))
+        store.conn.commit()
+        result = store.apply_line_wrap(0, shrink_font=True, min_font=18)
+        self.assertEqual((result["shrunk"], result["too_tall"]), (1, 0))
+        cur.execute("SELECT translated_text FROM entries WHERE json_path = 'e/1'")
+        first = cur.fetchone()[0]
+        self.assertTrue(first.startswith("\\f["))
+        self.assertEqual(store.apply_line_wrap(0, shrink_font=True, min_font=18)["wrapped"], 0)
+        # Turning the option off puts the normal size back.
+        store.apply_line_wrap(0, shrink_font=False)
+        cur.execute("SELECT translated_text FROM entries WHERE json_path = 'e/1'")
+        self.assertNotIn("\\f[", cur.fetchone()[0])
+
+
 class StoreWrapPassTests(unittest.TestCase):
     def setUp(self):
         self.store = EditorStore(":memory:")

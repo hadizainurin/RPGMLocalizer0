@@ -25,6 +25,7 @@ _DEBRIS_RE = re.compile(r"```|\]\s*\}|\(Note:|\"t\"\s*:")
 
 #: The app's own segment markers. One in a translation means reassembly
 #: failed; the text around it is unreliable (codes moved, parts untranslated).
+_FONT_CODE_RE = re.compile(r"\\f\[\d+\]")
 _INTERNAL_MARKER_RE = re.compile(r"TXT\s*SEG|RPGMSEP|SEP777|ТХЦЭГ|THCEG", re.IGNORECASE)
 
 
@@ -147,6 +148,10 @@ def _codes_changed(original: str, translated: str) -> bool:
     again, and reset again (120 rows per load in False Myth 2). So each code
     run of the original is looked up in the translation as written.
     """
+    # Font size (WOLF \\f[n]) is layout, not logic: the word-wrap pass shrinks
+    # it for messages that are too tall. Compare without it.
+    original = _FONT_CODE_RE.sub("", original)
+    translated = _FONT_CODE_RE.sub("", translated)
     runs = [seg.content for seg in segment_text(original) if seg.type == SegmentType.CODE]
     rest = translated
     for run in sorted(runs, key=len, reverse=True):

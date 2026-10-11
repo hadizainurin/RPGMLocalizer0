@@ -59,6 +59,12 @@ class SettingsBackend(QObject):
             # from the game's own Japanese lines.
             "editor_wordwrap": True,
             "editor_wrap_chars": 0,
+            # Messages still taller than the window after wrapping get a smaller
+            # font (WOLF \\f[n]), never below editor_min_font. editor_default_font
+            # is the size of messages with no \\f code (0 = most common in game).
+            "editor_font_shrink": True,
+            "editor_min_font": 18,
+            "editor_default_font": 0,
             "progress_throttle_ms": 250,
             "use_multi_endpoint": True,
             "enable_lingva_fallback": True,
@@ -524,6 +530,30 @@ class SettingsBackend(QObject):
     @editorWrapChars.setter
     def editorWrapChars(self, val: int) -> None:
         self._set("editor_wrap_chars", max(0, min(200, int(val))))
+
+    @pyqtProperty(bool, notify=settingsChanged)
+    def editorFontShrink(self) -> bool:
+        return bool(self._get("editor_font_shrink", True))
+
+    @editorFontShrink.setter
+    def editorFontShrink(self, val: bool) -> None:
+        self._set("editor_font_shrink", bool(val))
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def editorMinFont(self) -> int:
+        return max(8, min(64, int(self._get("editor_min_font", 18) or 18)))
+
+    @editorMinFont.setter
+    def editorMinFont(self, val: int) -> None:
+        self._set("editor_min_font", max(8, min(64, int(val))))
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def editorDefaultFont(self) -> int:
+        return max(0, min(64, int(self._get("editor_default_font", 0) or 0)))
+
+    @editorDefaultFont.setter
+    def editorDefaultFont(self, val: int) -> None:
+        self._set("editor_default_font", max(0, min(64, int(val))))
 
     @pyqtProperty(int, notify=settingsChanged)
     def localLlmMaxTokens(self) -> int:

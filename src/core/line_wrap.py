@@ -153,15 +153,45 @@ def _wrap_line(line: str, limit: int) -> list[str]:
     return out
 
 
-def wrap_text(text: str, limit: int) -> str:
-    """Re-break every line of *text* that is wider than *limit* units."""
+def wrap_text(text: str, limit: int, max_lines: int = 0, keep_first: bool = False) -> str:
+    """Re-break every line of *text* that is wider than *limit* units.
+
+    With *max_lines*, a message that would come out taller than that is
+    re-flowed instead: its lines are joined into one paragraph and wrapped
+    again, so the model's own short breaks ("...no matter what\nit takes.")
+    stop costing a line each. Seen in False Myth 2: a 4-line original became
+    7 lines and the last one fell below the window. *keep_first* keeps line 1
+    on its own (the speaker's name, "Velka").
+    """
     if not text or limit <= 0:
         return text
     lines = text.split("\n")
     wrapped: list[str] = []
     for line in lines:
         wrapped.extend(_wrap_line(line, limit))
-    return "\n".join(wrapped)
+    if not max_lines or len(wrapped) <= max_lines:
+        return "\n".join(wrapped)
+    head = lines[:1] if keep_first and len(lines) > 1 else []
+    body = lines[len(head):]
+    joined = " ".join(part.strip(" \t\u3000") for part in body if part.strip(" \t\u3000"))
+    reflowed = head + _wrap_line(joined, limit)
+    return "\n".join(reflowed if len(reflowed) < len(wrapped) else wrapped)
+
+
+def has_speaker_line(original: str) -> bool:
+    """True if the original's first line is a speaker name above the speech.
+
+    WOLF games write it as a short line followed by a line opening with 「, 『
+    or （, e.g. "ヴェルカ\n「…でも後悔はしないわ。".
+    """
+    lines = (original or "").split("\n")
+    if len(lines) < 2:
+        return False
+    first = lines[0]
+    visible = "".join(seg.content for seg in segment_text(first) if seg.type == SegmentType.TEXT).strip()
+    second = "".join(seg.content for seg in segment_text(lines[1]) if seg.type == SegmentType.TEXT).lstrip(" \u3000")
+    return (0 < len(visible) <= 12 and not any(ch in visible for ch in "「」『』。！？")
+            and second[:1] in ("「", "『", "（", "("))
 
 
 @dataclass
@@ -206,3 +236,73 @@ def learn_width(originals: Iterable[str], percentile: float = 0.999) -> Optional
 
 def should_wrap(file_path: str, tag: str) -> bool:
     return (file_path or "").lower().endswith(WRAP_FILE_EXTENSIONS) and (tag or "") in WRAP_TAGS
+
+
+# ---------------------------------------------------------------------------
+# Smaller font for messages that are still too tall after wrapping
+# ---------------------------------------------------------------------------
+#: Never shrink below this share of the message's normal size: much smaller
+#: and the text becomes hard to read.
+DEFAULT_MIN_FONT_SIZE = 18
+
+
+def restore_font_codes(original: str, text: str) -> str:
+    """Undo an earlier shrink, so the font is always fitted from scratch.
+
+    The \\f[n] codes of the translation are reset to the original's values
+    (the code check guarantees the same count), and a size code the original
+    did not start with - one this module added - is removed.
+    """
+    orig_sizes = _FONT_SIZE_RE.findall(original or "")
+    if font_size(original) is None and font_size(text) is not None:
+        # Drop the leading code we inserted (the model never adds one: the
+        # code check would have rejected it).
+        m = _FONT_SIZE_RE.search(text)
+        text = text[:m.start()] + text[m.end():]
+    found = list(_FONT_SIZE_RE.finditer(text))
+    if len(found) != len(orig_sizes):
+        return text
+    out, pos = [], 0
+    for m, size in zip(found, orig_sizes):
+        out.append(text[pos:m.start()])
+        out.append("\\f[%s]" % size)
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def scale_font(text: str, base: int, size: int) -> str:
+    """Make the whole message *size*/*base* times as big.
+
+    Every \\f[n] in it is scaled (a smaller footnote stays smaller); if the
+    message does not start with one, \\f[size] is put in front.
+    """
+    if size == base:
+        return text
+    scaled = _FONT_SIZE_RE.sub(lambda m: "\\f[%d]" % max(1, round(int(m.group(1)) * size / base)), text)
+    if font_size(text) is None:
+        scaled = "\\f[%d]%s" % (size, scaled)
+    return scaled
+
+
+def fit_message(text: str, limit: int, max_lines: int, keep_first: bool,
+                base_size: int, min_size: int) -> tuple[str, int, int]:
+    """Wrap *text*; if it is still too tall, try smaller font sizes.
+
+    *limit* and *max_lines* are for *base_size*. At size s a line holds
+    base/s times as many characters and the window base/s times as many
+    lines. The largest size that fits wins. Returns (text, lines, size used);
+    when nothing fits, the text is wrapped at the normal size.
+    """
+    wrapped = wrap_text(text, limit, max_lines, keep_first)
+    lines = wrapped.count("\n") + 1
+    if lines <= max_lines or not base_size or min_size >= base_size:
+        return wrapped, lines, base_size
+    for size in range(base_size - 1, min_size - 1, -1):
+        lim = int(limit * base_size / size)
+        cap = int(max_lines * base_size / size + 1e-9)
+        cand = wrap_text(text, lim, cap, keep_first)
+        n = cand.count("\n") + 1
+        if n <= cap:
+            return scale_font(cand, base_size, size), n, size
+    return wrapped, lines, base_size

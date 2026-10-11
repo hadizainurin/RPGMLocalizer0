@@ -827,6 +827,36 @@ Item {
                             font.pixelSize: 11
                             color: t ? t.textMuted : "#55556a"
                         }
+                        ToggleRow {
+                            label: localeManager.strings.settings.editor_font_shrink_label || "Smaller Font for Messages That Are Too Tall"
+                            desc: localeManager.strings.settings.editor_font_shrink_desc || "If a message still has more lines than the window after wrapping, lower its font size (\\f[n]) just enough to fit."
+                            enabled: settingsBackend.editorWordwrap
+                            checked: settingsBackend.editorFontShrink
+                            onToggled: (val) => { settingsBackend.editorFontShrink = val }
+                        }
+                        StyledSlider {
+                            label: localeManager.strings.settings.editor_min_font_label || "Smallest Font Size"
+                            from: 8; to: 40; step: 1
+                            editable: true
+                            enabled: settingsBackend.editorWordwrap && settingsBackend.editorFontShrink
+                            value: settingsBackend.editorMinFont
+                            onMoved: (val) => { settingsBackend.editorMinFont = Math.round(val) }
+                        }
+                        StyledSlider {
+                            label: localeManager.strings.settings.editor_default_font_label || "Normal Message Font Size (0 = automatic)"
+                            from: 0; to: 40; step: 1
+                            editable: true
+                            enabled: settingsBackend.editorWordwrap && settingsBackend.editorFontShrink
+                            value: settingsBackend.editorDefaultFont
+                            onMoved: (val) => { settingsBackend.editorDefaultFont = Math.round(val) }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: localeManager.strings.settings.editor_default_font_hint || "The size of messages that have no \\f[n] code. 0 = the size the game uses most (24 in False Myth 2). If shrunk messages look larger instead of smaller in game, set the real size here."
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
                         Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
                         ToggleRow {
                             label: localeManager.strings.settings.translate_notes_label

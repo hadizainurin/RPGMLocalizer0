@@ -201,7 +201,12 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
     if not store or not settings.get("editor_wordwrap", True):
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
     try:
-        result = store.apply_line_wrap(int(settings.get("editor_wrap_chars", 0) or 0))
+        result = store.apply_line_wrap(
+            int(settings.get("editor_wrap_chars", 0) or 0),
+            shrink_font=bool(settings.get("editor_font_shrink", True)),
+            min_font=int(settings.get("editor_min_font", 18) or 18),
+            default_font=int(settings.get("editor_default_font", 0) or 0),
+        )
     except Exception as exc:  # a wrap problem must never block loading or saving
         if logger:
             logger.warning("Word-wrap pass failed: %s", exc)
@@ -209,8 +214,9 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
     if not isinstance(result, dict):   # store without a wrap pass (or a stand-in)
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
     if logger and (result["wrapped"] or result["too_tall"]):
-        logger.info("Word-wrap (%d chars/line): %d rows wrapped, %d taller than the window.",
-                    result["limit"], result["wrapped"], result["too_tall"])
+        logger.info("Word-wrap (%d chars/line): %d rows wrapped, %d in a smaller font, "
+                    "%d still taller than the window.", result["limit"], result["wrapped"],
+                    result.get("shrunk", 0), result["too_tall"])
     return result
 
 
@@ -2653,6 +2659,9 @@ class EditorBackend(QObject):
             if failures:
                 detail = "; ".join(f"{name}: {why}" for name, why in failures[:2])
                 message += f" {len(failures)} file(s) failed - {detail}"
+            if wrap_result.get("shrunk"):
+                message += (f" {wrap_result['shrunk']} long messages use a smaller font "
+                            "so they fit the window.")
             if wrap_result.get("too_tall"):
                 message += (f" {wrap_result['too_tall']} wrapped messages have more lines than "
                             "the message window shows - see the Warnings filter.")

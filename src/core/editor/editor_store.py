@@ -1198,7 +1198,8 @@ class EditorStore:
                 self.conn.commit()
         return reset
 
-    def apply_line_wrap(self, char_limit: int = 0) -> dict[str, int]:
+    def apply_line_wrap(self, char_limit: int = 0, shrink_font: bool = False,
+                        min_font: int = 18, default_font: int = 0) -> dict[str, int]:
         """Re-break translated message lines that are too wide for the window.
 
         Only WOLF message text is touched (see ``line_wrap.should_wrap``).
@@ -1211,9 +1212,17 @@ class EditorStore:
         game's own Japanese lines. Returns ``{"wrapped": rows changed,
         "too_tall": rows with more lines than the window shows, "limit": the
         width used for the most common font size}``.
+
+        With *shrink_font*, a message still taller than the window after
+        wrapping gets a smaller font (WOLF \\f[n]), down to *min_font*.
+        *default_font* is the size of messages with no \\f code (0 = the
+        most common \\f size in the game). ``"shrunk"`` counts those rows.
         """
-        from src.core.line_wrap import DEFAULT_MAX_LINES, learn_width, should_wrap, wrap_text
-        result = {"wrapped": 0, "too_tall": 0, "limit": 0}
+        from src.core.line_wrap import (
+            DEFAULT_MAX_LINES, fit_message, font_size, has_speaker_line, learn_width,
+            restore_font_codes, should_wrap, wrap_text,
+        )
+        result = {"wrapped": 0, "too_tall": 0, "limit": 0, "shrunk": 0}
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(
@@ -1223,9 +1232,10 @@ class EditorStore:
             rows = [r for r in cur.fetchall() if should_wrap(r["file_path"], r["tag"])]
             if not rows:
                 return result
-            width = None if char_limit > 0 else learn_width(r["original_text"] for r in rows)
+            width = learn_width(r["original_text"] for r in rows)
             if char_limit <= 0 and width is None:
                 return result
+            normal_font = default_font or (width.ref_size if width else 0) or 0
             result["limit"] = char_limit if char_limit > 0 else width.limit_for("")
             tall_note = "More lines than the message window shows"
             updates: list[tuple] = []
@@ -1234,9 +1244,21 @@ class EditorStore:
                 if not text or text == orig:
                     continue
                 limit = char_limit if char_limit > 0 else width.limit_for(orig)
-                new = wrap_text(text, limit)
-                lines = new.count("\n") + 1
-                tall = lines > max(DEFAULT_MAX_LINES, orig.count("\n") + 1)
+                max_lines = max(DEFAULT_MAX_LINES, orig.count("\n") + 1)
+                keep = has_speaker_line(orig)
+                # Always start from the normal size, so a shrink is re-fitted
+                # (or undone) when the text or the settings change.
+                base_text = restore_font_codes(orig, text)
+                base = font_size(orig) or normal_font
+                if shrink_font and base:
+                    new, lines, size = fit_message(base_text, limit, max_lines, keep, base, min_font)
+                    cap = int(max_lines * base / size + 1e-9)
+                    if size != base:
+                        result["shrunk"] += 1
+                else:
+                    new = wrap_text(base_text, limit, max_lines, keep_first=keep)
+                    lines, cap = new.count("\n") + 1, max_lines
+                tall = lines > cap
                 msg = r["warning_msg"] or ""
                 if not tall and tall_note in msg:
                     msg = " | ".join(part for part in msg.split(" | ")
