@@ -1,5 +1,6 @@
 {
   "common": {
+    "auto": "Auto",
     "ok": "OK",
     "cancel": "Cancel",
     "confirm": "Confirm",
@@ -67,13 +68,12 @@
     "editor_wordwrap_label": "Wrap Long Lines on Save (Translation Editor)",
     "editor_wordwrap_desc": "Breaks translated message lines that are too wide for the game's message window. WOLF RPG only for now.",
     "editor_wrap_chars_label": "Characters per Line",
-    "editor_wrap_auto_hint": "0 = automatic: the width is learned from the game's own Japanese lines. Applied when a project is opened and on Save; lines are only split, never joined.",
+    "editor_wrap_auto_hint": "Auto: the width is learned from the game's own Japanese lines. Applied when a project is opened and on Save; lines are only split, never joined.",
     "editor_wrap_manual_hint": "Lines longer than this many characters are broken at a space. Lower it if text still runs off the window; raise it if messages get too tall.",
     "editor_font_shrink_label": "Smaller Font for Messages That Are Too Tall",
     "editor_font_shrink_desc": "If a message still has more lines than the window after wrapping, lower its font size (\\f[n]) just enough to fit.",
     "editor_min_font_label": "Smallest Font Size",
-    "editor_default_font_label": "Normal Message Font Size (0 = automatic)",
-    "editor_default_font_hint": "The size of messages that have no \\f[n] code. 0 = the size the game uses most (24 in False Myth 2). If shrunk messages look larger instead of smaller in game, set the real size here.",
+    "editor_default_font_label": "Normal Message Font Size",
     "max_tokens_label": "Max Output Tokens",
     "max_tokens_auto_hint": "0 = no limit sent; llama-server uses its own -n / n_predict (default: until the reply ends or the context fills). Recommended. This is a ceiling, not a speed setting.",
     "max_tokens_manual_hint": "Fixed cap sent to the server. Too low truncates a merged batch, which fails to parse and costs more in retries than it saves.",

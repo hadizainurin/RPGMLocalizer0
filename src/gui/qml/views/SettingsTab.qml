@@ -172,6 +172,9 @@ Item {
         //: When true the value box is a text field, so a precise number can be
         //: typed instead of dragged to (large ranges are hard to hit exactly).
         property bool editable: false
+        //: Shown instead of 0 when 0 means "decide automatically".
+        property string zeroText: ""
+        function shown(v) { return (zeroText && Math.round(v) === 0) ? zeroText : Math.round(v) }
         signal moved(real val)
         spacing: 16; Layout.fillWidth: true
 
@@ -198,17 +201,17 @@ Item {
             //: 999999 as "Intermediate", lets it be typed, and then never emits
             //: editingFinished for it - so the box showed 999999 while nothing
             //: was saved. Range is enforced in commit() instead.
-            validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,7}$/ }
-            text: Math.round(sliderRow.value)
+            validator: RegularExpressionValidator { regularExpression: /^([0-9]{0,7}|[Aa][Uu][Tt][Oo])$/ }
+            text: sliderRow.shown(sliderRow.value)
             Material.theme: Material.Dark; Material.accent: t ? t.accent : "#7c6cf8"
             function commit() {
                 var n = parseInt(text, 10)
-                if (isNaN(n)) n = Math.round(sliderRow.value)
+                if (isNaN(n)) n = (sliderRow.zeroText && /^auto$/i.test(text)) ? 0 : Math.round(sliderRow.value)
                 n = Math.max(sliderRow.from, Math.min(sliderRow.to, n))
                 sliderRow.moved(n)
                 // Re-bind so the box shows the clamped, saved value and keeps
                 // following the slider afterwards.
-                text = Qt.binding(function() { return Math.round(sliderRow.value) })
+                text = Qt.binding(function() { return sliderRow.shown(sliderRow.value) })
             }
             onEditingFinished: commit()
             onActiveFocusChanged: if (!activeFocus) commit()
@@ -220,7 +223,7 @@ Item {
             border.color: t ? t.border2 : "#3d3d55"; border.width: 1
             Text {
                 anchors.centerIn: parent
-                text: Math.round(sliderRow.value) + (sliderRow.unit ? (" " + sliderRow.unit) : "")
+                text: sliderRow.shown(sliderRow.value) + (sliderRow.unit && !(sliderRow.zeroText && Math.round(sliderRow.value) === 0) ? (" " + sliderRow.unit) : "")
                 font.pixelSize: 12; font.bold: true
                 color: t ? t.accentLight : "#a89bf9"
             }
@@ -814,6 +817,7 @@ Item {
                             label: localeManager.strings.settings.editor_wrap_chars_label || "Characters per Line"
                             from: 0; to: 120; step: 1
                             editable: true
+                            zeroText: localeManager.strings.common.auto || "Auto"
                             enabled: settingsBackend.editorWordwrap
                             value: settingsBackend.editorWrapChars
                             onMoved: (val) => { settingsBackend.editorWrapChars = Math.round(val) }
@@ -821,7 +825,7 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: settingsBackend.editorWrapChars === 0
-                                  ? (localeManager.strings.settings.editor_wrap_auto_hint || "0 = automatic: the width is learned from the game's own Japanese lines. Applied when a project is opened and on Save; lines are only split, never joined.")
+                                  ? (localeManager.strings.settings.editor_wrap_auto_hint || "Auto: the width is learned from the game's own Japanese lines. Applied when a project is opened and on Save; lines are only split, never joined.")
                                   : (localeManager.strings.settings.editor_wrap_manual_hint || "Lines longer than this many characters are broken at a space. Lower it if text still runs off the window; raise it if messages get too tall.")
                             wrapMode: Text.Wrap
                             font.pixelSize: 11
@@ -843,19 +847,13 @@ Item {
                             onMoved: (val) => { settingsBackend.editorMinFont = Math.round(val) }
                         }
                         StyledSlider {
-                            label: localeManager.strings.settings.editor_default_font_label || "Normal Message Font Size (0 = automatic)"
+                            label: localeManager.strings.settings.editor_default_font_label || "Normal Message Font Size"
                             from: 0; to: 40; step: 1
                             editable: true
+                            zeroText: localeManager.strings.common.auto || "Auto"
                             enabled: settingsBackend.editorWordwrap && settingsBackend.editorFontShrink
                             value: settingsBackend.editorDefaultFont
                             onMoved: (val) => { settingsBackend.editorDefaultFont = Math.round(val) }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: localeManager.strings.settings.editor_default_font_hint || "The size of messages that have no \\f[n] code. 0 = the size the game uses most (24 in False Myth 2). If shrunk messages look larger instead of smaller in game, set the real size here."
-                            wrapMode: Text.Wrap
-                            font.pixelSize: 11
-                            color: t ? t.textMuted : "#55556a"
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
                         ToggleRow {
