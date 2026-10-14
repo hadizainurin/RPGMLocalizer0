@@ -20,8 +20,14 @@ GAME_BREAKING_ISSUES = ("empty translation", "game codes or tags changed", "form
                         "internal separator left in text", "reply debris in text")
 
 #: Pieces of the model's reply format that ended up inside a line: '"]}```',
-#: "(Note: ...", a JSON key, a stray brace.
-_DEBRIS_RE = re.compile(r"```|\]\s*\}|\(Note:|\"t\"\s*:")
+#: "(Note: ...", a JSON key, a stray brace - and the model reading its own
+#: instructions back ("(Engine codes unchanged: ...) (No filename translation:
+#: ...) (All constraints met.)", False Myth 2 event 777), which comes without
+#: any JSON around it. The phrases are the headings of the prompt's rules.
+_DEBRIS_RE = re.compile(
+    r"```|\]\s*\}|\(Note:|\"t\"\s*:"
+    r"|\((?:Engine codes|No filename|All constraints|Adult tone|JSON format|Preserved register)"
+)
 
 #: The app's own segment markers. One in a translation means reassembly
 #: failed; the text around it is unreliable (codes moved, parts untranslated).

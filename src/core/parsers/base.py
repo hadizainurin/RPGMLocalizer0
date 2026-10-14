@@ -3,6 +3,12 @@ from typing import List, Any, Dict, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal as Signal
 import re
 
+#: Tag of a "listed" entry that is a lookup key, not text: the game builds file
+#: names or looks records up with it, so translating it breaks the game. Parsers
+#: report such values (see WolfParser) so the editor can show them and restore
+#: them if an earlier version of the app translated them, but never translate.
+ASSET_KEY_TAG = "asset_key"
+
 
 class ParserMeta(type(QObject), ABCMeta):
     """Metaclass that combines QObject's meta and ABCMeta to avoid conflicts."""

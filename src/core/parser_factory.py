@@ -67,12 +67,14 @@ def get_parser(file_path: str, settings: Optional[dict[str, Any]] = None) -> Opt
     elif ext == ".mps":
         return WolfParser(
             regex_blacklist=settings.get('regex_blacklist', []),
-            translate_comments=settings.get('translate_comments', False)
+            translate_comments=settings.get('translate_comments', False),
+            key_field_words=settings.get('wolf_key_field_words', [])
         )
     elif ext == ".dat" and basename not in ("game.dat", "sysdatabasebasic.dat"):
         return WolfParser(
             regex_blacklist=settings.get('regex_blacklist', []),
-            translate_comments=settings.get('translate_comments', False)
+            translate_comments=settings.get('translate_comments', False),
+            key_field_words=settings.get('wolf_key_field_words', [])
         )
     
     return None

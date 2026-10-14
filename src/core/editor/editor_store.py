@@ -17,10 +17,14 @@ from src.core.editor.syntax_checker import (
     normalize_turkish,
     validate_codes,
 )
+from src.core.parsers.base import ASSET_KEY_TAG
 from src.core.text_segmenter import SegmentType, segment_text, reassemble
 
 
-STORE_VERSION = 4
+#: 5: database lookup keys (ASSET_KEY_TAG rows) are listed instead of translated.
+#: Bumping the version makes the next open rescan, which restores any key that
+#: an earlier version had translated.
+STORE_VERSION = 5
 
 
 def _compute_sample_crc(file_path: str) -> int:
@@ -58,6 +62,8 @@ def classify_category(file_name: str, tag: str = "") -> str:
     # trust that before guessing from the file name.
     if t in PLAYER_FACING_TAGS:
         return "dialogues"
+    if t == ASSET_KEY_TAG:
+        return "system"
 
     if "system" in t:
         return "system"
@@ -348,6 +354,7 @@ class EditorStore:
             records: list[tuple] = []
             mtimes: list[tuple] = []
             reverted_count = 0
+            restored_keys = 0
 
             for file_path, entries in extracted_files.items():
                 norm_fp = os.path.normcase(os.path.normpath(file_path))
@@ -373,6 +380,29 @@ class EditorStore:
 
                 for idx, (path, text, tag) in enumerate(entries):
                     category = classify_category(file_name, tag)
+
+                    # A lookup key (part of a file name, ...): never translated.
+                    # Its original is the vanilla value; if the game file holds
+                    # something else - an earlier version translated it - the
+                    # row is unsaved, so Save puts the original back.
+                    if tag == ASSET_KEY_TAG:
+                        key_original = file_backups.get(path, text)
+                        damaged_key = text != key_original
+                        restored_keys += 1 if damaged_key else 0
+                        # Forget the translation an earlier run cached for it.
+                        if damaged_key and cache_resolver is not None and hasattr(cache_resolver, "delete"):
+                            for lang in dict.fromkeys([source_lang, "auto", "ja"]):
+                                try:
+                                    cache_resolver.delete(key_original, lang, target_lang)
+                                except Exception:
+                                    pass
+                        records.append((
+                            file_path, file_name, path, tag, category,
+                            key_original, key_original, "", "",
+                            1 if damaged_key else 0, key_original.count("\n") + 1,
+                            0, "", 0, "",
+                        ))
+                        continue
 
                     # Filled from the cache, i.e. NOT what the game file contains.
                     from_cache = False
@@ -517,6 +547,8 @@ class EditorStore:
             self.conn.commit()
             #: Machine translations dropped on this load for damaging codes.
             self.last_load_reverted = reverted_count
+            #: Lookup keys an earlier version had translated, put back on this load.
+            self.last_load_restored_keys = restored_keys
             return len(records)
 
     def query_page(
@@ -930,12 +962,12 @@ class EditorStore:
                     continue
 
                 cur.execute(
-                    "SELECT id, original_text, translated_text FROM entries "
+                    "SELECT id, original_text, translated_text, tag FROM entries "
                     "WHERE file_name = ? AND json_path = ?",
                     (file_name, json_path),
                 )
                 row = cur.fetchone()
-                if row is None:
+                if row is None or row["tag"] == ASSET_KEY_TAG:
                     skipped += 1
                     continue
                 if original is not None and row["original_text"] != original:
@@ -1144,11 +1176,13 @@ class EditorStore:
         from src.core.text_segmenter import has_translatable_content
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT id, original_text, no_text FROM entries")
+            cur.execute("SELECT id, original_text, no_text, tag FROM entries")
             changes = []
             total = 0
             for r in cur.fetchall():
-                flag = 0 if has_translatable_content(r["original_text"], source_lang) else 1
+                # Lookup keys are complete as they are, whatever they look like.
+                flag = (1 if r["tag"] == ASSET_KEY_TAG
+                        or not has_translatable_content(r["original_text"], source_lang) else 0)
                 total += flag
                 if flag != (r["no_text"] or 0):
                     changes.append((flag, r["id"]))
@@ -1199,7 +1233,82 @@ class EditorStore:
         return reset
 
     def apply_line_wrap(self, char_limit: int = 0, shrink_font: bool = False,
-                        min_font: int = 18, default_font: int = 0) -> dict[str, int]:
+                        min_font: int = 18, default_font: int = 0,
+                        db_text: bool = True) -> dict[str, int]:
+        """Wrap translated message lines and database text to their windows.
+
+        Two passes, merged into one result:
+        - message text (``_apply_message_wrap``): the settings above apply;
+        - database text (``_apply_db_text_wrap``): multi-line descriptions,
+          hints and tutorials, each field wrapped to the width of its own window.
+        ``"wrapped"`` counts the rows of both; ``"db_wrapped"`` and
+        ``"db_too_tall"`` are the database part. ``db_text=False`` skips it.
+        """
+        result = self._apply_message_wrap(char_limit, shrink_font, min_font, default_font)
+        db = self._apply_db_text_wrap() if db_text else {"wrapped": 0, "too_tall": 0}
+        result["wrapped"] += db["wrapped"]
+        result["db_wrapped"] = db["wrapped"]
+        result["db_too_tall"] = db["too_tall"]
+        return result
+
+    def _apply_db_text_wrap(self) -> dict[str, int]:
+        """Wrap multi-line database text to the width of its own field (see line_wrap).
+
+        A row whose text changes becomes unsaved, so a plain Save also fixes
+        translations saved before this existed. Rows still taller than the
+        field's window get a warning. Returns ``{"wrapped", "too_tall"}``.
+        """
+        from src.core.line_wrap import db_field_key, fit_db_text, is_db_text, learn_db_windows
+        result = {"wrapped": 0, "too_tall": 0}
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT id, file_path, json_path, tag, original_text, translated_text, "
+                "is_modified, has_warning, warning_msg FROM entries "
+                "WHERE json_path LIKE '%/string_values/%'"
+            )
+            rows = [r for r in cur.fetchall()
+                    if is_db_text(r["file_path"], r["json_path"], r["tag"], r["original_text"])]
+            if not rows:
+                return result
+            windows = learn_db_windows(
+                (db_field_key(r["file_path"], r["json_path"]), r["original_text"]) for r in rows
+            )
+            tall_note = "More lines than this window shows"
+            updates: list[tuple] = []
+            for r in rows:
+                orig, text = r["original_text"], r["translated_text"]
+                window = windows.get(db_field_key(r["file_path"], r["json_path"]))
+                if window is None or not text or text == orig:
+                    continue
+                cap = max(window.max_lines, len(orig.replace("\r\n", "\n").rstrip("\n").split("\n")))
+                new, lines = fit_db_text(text, orig, window.limit_for(orig), cap)
+                tall = lines > cap
+                msg = r["warning_msg"] or ""
+                if not tall and tall_note in msg:
+                    msg = " | ".join(part for part in msg.split(" | ")
+                                     if not part.startswith(tall_note))
+                if tall:
+                    result["too_tall"] += 1
+                    if tall_note not in msg:
+                        msg = f"{msg} | {tall_note} ({lines} lines)" if msg else f"{tall_note} ({lines} lines)"
+                if new == text and msg == (r["warning_msg"] or ""):
+                    continue
+                if new != text:
+                    result["wrapped"] += 1
+                updates.append((new, 1 if new != text else r["is_modified"], lines,
+                                1 if msg else 0, msg, r["id"]))
+            if updates:
+                cur.executemany(
+                    "UPDATE entries SET translated_text = ?, is_modified = ?, line_count = ?, "
+                    "has_warning = ?, warning_msg = ? WHERE id = ?",
+                    updates,
+                )
+                self.conn.commit()
+        return result
+
+    def _apply_message_wrap(self, char_limit: int = 0, shrink_font: bool = False,
+                            min_font: int = 18, default_font: int = 0) -> dict[str, int]:
         """Re-break translated message lines that are too wide for the window.
 
         Only WOLF message text is touched (see ``line_wrap.should_wrap``).
@@ -1306,6 +1415,8 @@ class EditorStore:
                     continue
                 orig = row["original_text"]
                 tag = row["tag"]
+                if tag == ASSET_KEY_TAG:
+                    continue
 
                 warnings = validate_codes(orig, new_text)
                 lines, overflow = check_line_overflow(new_text, tag)

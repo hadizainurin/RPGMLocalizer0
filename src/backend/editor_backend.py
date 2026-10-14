@@ -81,6 +81,9 @@ def _extract_entries_from_backup(
                 )
                 return []
             entries = list(parser.extract_text(staged))
+            # Listed entries (lookup keys) carry the vanilla value of rows the
+            # editor shows but never translates.
+            entries += list(getattr(parser, "_listed_entries", None) or [])
             if not entries:
                 log.warning(
                     "Backup of %s parsed to 0 entries (%s). Original text cannot be "
@@ -206,6 +209,9 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
             shrink_font=bool(settings.get("editor_font_shrink", True)),
             min_font=int(settings.get("editor_min_font", 18) or 18),
             default_font=int(settings.get("editor_default_font", 0) or 0),
+            # config.json only (no settings screen): database text is wrapped to
+            # the width of its own field; set false if a game draws it itself.
+            db_text=bool(settings.get("editor_wrap_db_text", True)),
         )
     except Exception as exc:  # a wrap problem must never block loading or saving
         if logger:
@@ -213,10 +219,11 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
     if not isinstance(result, dict):   # store without a wrap pass (or a stand-in)
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
-    if logger and (result["wrapped"] or result["too_tall"]):
-        logger.info("Word-wrap (%d chars/line): %d rows wrapped, %d in a smaller font, "
-                    "%d still taller than the window.", result["limit"], result["wrapped"],
-                    result.get("shrunk", 0), result["too_tall"])
+    if logger and (result["wrapped"] or result["too_tall"] or result.get("db_too_tall")):
+        logger.info("Word-wrap (%d chars/line): %d rows wrapped (%d database texts), %d in a "
+                    "smaller font, %d messages and %d database texts still taller than the window.",
+                    result["limit"], result["wrapped"], result.get("db_wrapped", 0),
+                    result.get("shrunk", 0), result["too_tall"], result.get("db_too_tall", 0))
     return result
 
 
@@ -266,6 +273,13 @@ def reset_cut_short(store: Any, settings: dict[str, Any], logger: Any = None) ->
         return 0
 
 
+def _restored_keys_message(count: int) -> str:
+    if not count:
+        return ""
+    return (f" {count} game lookup keys (such as voice file names) that an earlier version had "
+            "translated were put back to the original - press Save to repair the game files.")
+
+
 def _cut_short_message(count: int) -> str:
     if not count:
         return ""
@@ -276,8 +290,16 @@ def _cut_short_message(count: int) -> str:
 def _wrap_message(result: dict[str, int]) -> str:
     if not result.get("wrapped"):
         return ""
-    return (f" {result['wrapped']} long translated lines were wrapped to fit the message "
-            f"window ({result['limit']} characters per line) - press Save to write them.")
+    db = result.get("db_wrapped", 0)
+    messages = result["wrapped"] - db
+    parts = []
+    if messages:
+        parts.append(f"{messages} long translated lines were wrapped to fit the message "
+                     f"window ({result['limit']} characters per line)")
+    if db:
+        parts.append(f"{db} database texts (descriptions, hints, tutorials) were wrapped to "
+                     "the width of their own windows")
+    return " " + " and ".join(parts) + " - press Save to write them."
 
 
 class ScanWorker(QThread):
@@ -387,12 +409,17 @@ class ScanWorker(QThread):
                 self.progress.emit(pct, 100, msg)
 
             self.progress.emit(15, 100, f"Parsing {len(files)} files...")
-            all_entries, parsed_files, _ = pipeline._extract_all_text(files, progress_callback=on_extract_progress)
+            all_entries, parsed_files, all_listed = pipeline._extract_all_text(files, progress_callback=on_extract_progress)
 
             # Build extracted dict for store
             extracted_dict: dict[str, list[tuple[str, str, str]]] = {}
             for fp, (_parser, entries) in parsed_files.items():
-                extracted_dict[fp] = entries
+                extracted_dict[fp] = list(entries)
+            # Listed entries are found but never translated (lookup keys). The
+            # store keeps them so a key an earlier version translated is restored.
+            for list_fp, path, text, tag in all_listed:
+                if list_fp in extracted_dict:
+                    extracted_dict[list_fp].append((path, text, tag))
 
             # Attempt to resolve vanilla (pre-translation) text from the oldest backup
             # in each file's `.rpgm_backup/` folder — the same location the pipeline uses.
@@ -437,6 +464,7 @@ class ScanWorker(QThread):
 
             self.progress.emit(100, 100, "Done!")
             message = f"{total_loaded} strings loaded successfully."
+            message += _restored_keys_message(getattr(self.store, "last_load_restored_keys", 0))
             reverted = getattr(self.store, "last_load_reverted", 0)
             if reverted:
                 message += (f" {reverted} machine translations with damaged game codes "
@@ -2665,6 +2693,9 @@ class EditorBackend(QObject):
             if wrap_result.get("too_tall"):
                 message += (f" {wrap_result['too_tall']} wrapped messages have more lines than "
                             "the message window shows - see the Warnings filter.")
+            if wrap_result.get("db_too_tall"):
+                message += (f" {wrap_result['db_too_tall']} database texts have more lines than "
+                            "their window shows - see the Warnings filter.")
             self.saveFinished.emit(len(failures) == 0, message)
         except Exception as exc:
             self.logger.error(f"Error during editor save: {exc}")

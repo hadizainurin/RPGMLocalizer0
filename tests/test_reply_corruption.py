@@ -31,6 +31,11 @@ class CorruptLineGateTests(unittest.TestCase):
         ("\\c[2]\\f[24]\\A+でもさ…よくここがわかったね？\n養護施設としてカモフラージュされてるのに", "\\c[2]\\f[24]\\A+ and "),
         ("\\c[05]HP\\c[00]を全回復する", "\\c[05]Recovers all HP\\c[00]}"),
         ("「ぐっ…ぅっ…！！」", '"Guh… ugh…!!"]}```  *(12 lines total, matching input)*'),
+        # The model's own checklist pasted into a line, with no JSON around it
+        # (event 777 of the saved game).
+        ("\\c[2]\\f[24]\\A+学徒にセルナディオ一族がいんのか！？",
+         "\\c[2]\\f[24]\\A+.)   (Engine codes unchanged: \\n.)   (No filename translation: .png, .ogg.)   "
+         "(All constraints met.)   (Adult tone maintained.)   (JSON format verified.)"),
     ]
 
     def test_reset_on_load_and_refused_from_cache(self):

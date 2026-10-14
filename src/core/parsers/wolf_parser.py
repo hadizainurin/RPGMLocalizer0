@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.file_ops import safe_write
-from .base import BaseParser
+from .base import ASSET_KEY_TAG, BaseParser
 from .wolf_binary import (
     CID_BATTLE_MESSAGE,
     CID_CHOICES,
@@ -74,6 +74,27 @@ _WOLF_ACTOR_TYPE_WORDS = (
 )
 
 
+#: Words in a database FIELD name that mark its values as lookup keys, not text.
+#: The game glues these values into file names ("Data/cvRouge/" + the field's
+#: value + "15_1.ogg"), so a translated value points at a file that does not
+#: exist ("B Rouge15_1.ogg" - the voice error found in False Myth 2, where the
+#: field 呼び出し名v2 held "Bルージュ"). Names, descriptions and titles are NOT
+#: keys; keep this list to words that say "identifier / file / folder".
+#: A field with one of these words is listed but never translated. If a game
+#: has a key field with another name, add a word here or put it in the
+#: ``wolf_key_field_words`` setting (config.json, a list of words).
+WOLF_KEY_FIELD_WORDS: tuple[str, ...] = (
+    "呼び出し", "呼出", "フォルダ", "ファイル名", "ファイルパス", "ファイル指定",
+    "識別名", "識別子", "ファイル識別", "素材名", "画像名", "音声名", "ボイス名",
+)
+
+
+def is_key_field(field_name: str, extra_words: tuple[str, ...] | list[str] = ()) -> bool:
+    """True if a database field holds lookup keys (see WOLF_KEY_FIELD_WORDS)."""
+    name = field_name or ""
+    return any(word and word in name for word in (*WOLF_KEY_FIELD_WORDS, *extra_words))
+
+
 def wolf_db_type_tag(type_name: str) -> str:
     """Category tag for a WOLF database type, from the author's type name."""
     name = type_name or ""
@@ -91,10 +112,20 @@ class WolfParser(BaseParser):
         self,
         regex_blacklist: Optional[List[str]] = None,
         translate_comments: bool = False,
+        key_field_words: Optional[List[str]] = None,
     ) -> None:
         super().__init__(regex_blacklist=regex_blacklist)
         self.translate_comments = translate_comments
         self.last_apply_error: Optional[str] = None
+        #: Extra field-name words that mark a database field as a lookup key.
+        if isinstance(key_field_words, str):
+            key_field_words = key_field_words.replace("\n", ",").split(",")
+        self.key_field_words: tuple[str, ...] = tuple(
+            w.strip() for w in (key_field_words or []) if isinstance(w, str) and w.strip()
+        )
+        #: Entries found but deliberately not translated, as (locator, text, tag)
+        #: - the pipeline exports them, the editor lists them (see ASSET_KEY_TAG).
+        self._listed_entries: List[Tuple[str, str, str]] = []
 
     def is_wolf_text_translatable(self, cid: int, text: str) -> bool:
         """Determine if a command text slot is translatable user-facing text.
@@ -143,6 +174,7 @@ class WolfParser(BaseParser):
     def extract_text(self, file_path: str) -> List[Tuple[str, str, str]]:
         """Extract translatable text entries as (locator, text, tag)."""
         entries: List[Tuple[str, str, str]] = []
+        self._listed_entries = []
         if not os.path.exists(file_path):
             return entries
 
@@ -258,6 +290,14 @@ class WolfParser(BaseParser):
                         continue
                     text = record.string_values[idx]
                     if not text or not text.strip():
+                        continue
+                    if is_key_field(f.name, self.key_field_words):
+                        # A lookup key (e.g. part of a voice file name): never
+                        # translate it, but report it so a value an earlier
+                        # version translated can be put back.
+                        self._listed_entries.append(
+                            (f"types/{type_idx}/data/{data_idx}/string_values/{idx}", text, ASSET_KEY_TAG)
+                        )
                         continue
                     if not self.is_safe_to_translate(text):
                         continue

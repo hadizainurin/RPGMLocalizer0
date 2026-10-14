@@ -65,6 +65,13 @@ class SettingsBackend(QObject):
             "editor_font_shrink": True,
             "editor_min_font": 18,
             "editor_default_font": 0,
+            # config.json only. Multi-line database text (descriptions, hints,
+            # tutorials) is wrapped to the width of its own field; false = off.
+            "editor_wrap_db_text": True,
+            # config.json only. Extra words in a WOLF database FIELD name that
+            # mark it as a lookup key (never translated), e.g. ["呼び名ID"].
+            # See WOLF_KEY_FIELD_WORDS in src/core/parsers/wolf_parser.py.
+            "wolf_key_field_words": [],
             "progress_throttle_ms": 250,
             "use_multi_endpoint": True,
             "enable_lingva_fallback": True,

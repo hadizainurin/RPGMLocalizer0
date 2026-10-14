@@ -200,12 +200,12 @@ class WrapWidth:
     units: int              # width in half-width units at ref_size
     ref_size: Optional[int]  # most common \\f[n] size, or None
 
-    def limit_for(self, original: str) -> int:
+    def limit_for(self, original: str, floor: int = MIN_AUTO_WIDTH) -> int:
         size = font_size(original)
         units = self.units
         if size and self.ref_size and size != self.ref_size:
             units = int(units * self.ref_size / size)
-        return max(MIN_AUTO_WIDTH, int(units * LATIN_WIDTH_FACTOR))
+        return max(floor, int(units * LATIN_WIDTH_FACTOR))
 
 
 def learn_width(originals: Iterable[str], percentile: float = 0.999) -> Optional[WrapWidth]:
@@ -236,6 +236,134 @@ def learn_width(originals: Iterable[str], percentile: float = 0.999) -> Optional
 
 def should_wrap(file_path: str, tag: str) -> bool:
     return (file_path or "").lower().endswith(WRAP_FILE_EXTENSIONS) and (tag or "") in WRAP_TAGS
+
+
+# ---------------------------------------------------------------------------
+# Database text (tutorials, hints, descriptions)
+# ---------------------------------------------------------------------------
+# A WOLF database value is drawn by the game's own windows, not the message
+# window, so there is no one width for all of it. But the author broke a
+# multi-line value by hand to fit ITS window, and every value of one field
+# (type + field) goes to the same window: the widest Japanese line seen in the
+# field is that window's width. Found in False Myth 2: the tutorial text
+# (チュートリアル管理 / 説明文) came back as one long line and ran off the screen.
+#: Values of one field needed before its window is trusted. Fewer says too
+#: little about the window, so those are left as translated.
+MIN_DB_GROUP = 3
+
+#: Lines a field needs before its widest ones may be treated as outliers.
+MIN_LINES_FOR_PERCENTILE = 50
+
+#: Narrowest width (English characters) the auto width may give a database field.
+#: A field whose longest Japanese line is short (a 10-character effect text) says
+#: little about its window - the author may simply have written short lines - and
+#: wrapping that narrow would turn a harmless overflow into a very tall text.
+MIN_DB_WIDTH = MIN_AUTO_WIDTH
+
+_DB_PATH_RE = re.compile(r"^types/(\d+)/data/\d+/string_values/(\d+)$")
+
+
+def is_db_text(file_path: str, json_path: str, tag: str, original: str) -> bool:
+    """True for a WOLF database string whose original the author broke over lines.
+
+    Single-line values (names, titles, "one-line" effect texts) are never
+    wrapped: one line says nothing about the window, and may be drawn on
+    exactly one line. Lookup keys (``asset_key``) are not text at all.
+    """
+    return (
+        (file_path or "").lower().endswith(".dat")
+        and _DB_PATH_RE.match(json_path or "") is not None
+        and (tag or "") != "asset_key"
+        and "\n" in (original or "").rstrip("\r\n")
+    )
+
+
+def db_field_key(file_path: str, json_path: str) -> tuple[str, str, str]:
+    """(file, type, field) of a database value: the values that share a window."""
+    m = _DB_PATH_RE.match(json_path or "")
+    return (file_path, m.group(1), m.group(2)) if m else (file_path, "", "")
+
+
+@dataclass
+class DbFieldWindow:
+    """Window of one database field, learned from the author's own lines."""
+    width: WrapWidth
+    max_lines: int
+
+    def limit_for(self, original: str) -> int:
+        return self.width.limit_for(original, floor=MIN_DB_WIDTH)
+
+
+def _plain(text: str) -> str:
+    return (text or "").replace("\r\n", "\n")
+
+
+def _line_count(text: str) -> int:
+    return len(_plain(text).rstrip("\n").split("\n"))
+
+
+def learn_db_windows(items: Iterable[tuple[tuple, str]], percentile: float = 0.999) -> dict[tuple, DbFieldWindow]:
+    """Learn each field's window from ((file, type, field), original) pairs."""
+    groups: dict[tuple, list[str]] = {}
+    for key, original in items:
+        groups.setdefault(key, []).append(_plain(original))
+    windows: dict[tuple, DbFieldWindow] = {}
+    for key, texts in groups.items():
+        if len(texts) < MIN_DB_GROUP:
+            continue
+        # A small field has too few lines to tell a stray overlong one from the
+        # window's real width: take the widest. A large one drops the odd outlier.
+        pct = percentile if sum(_line_count(t) for t in texts) >= MIN_LINES_FOR_PERCENTILE else 1.0
+        width = learn_width(texts, pct)
+        if width is None:
+            continue
+        counts = sorted(_line_count(t) for t in texts)
+        windows[key] = DbFieldWindow(width, max(2, counts[int(pct * (len(counts) - 1))]))
+    return windows
+
+
+def _reflow_paragraphs(text: str, limit: int) -> str:
+    """Join the lines of each paragraph (blank lines separate them) and wrap again."""
+    out: list[str] = []
+    para: list[str] = []
+
+    def flush() -> None:
+        if para:
+            joined = " ".join(p.strip(" \t\u3000") for p in para if p.strip(" \t\u3000"))
+            out.extend(_wrap_line(joined, limit))
+            para.clear()
+
+    for line in text.split("\n"):
+        if line.strip(" \t\u3000"):
+            para.append(line)
+        else:
+            flush()
+            out.append("")
+    flush()
+    return "\n".join(out)
+
+
+def fit_db_text(text: str, original: str, limit: int, max_lines: int) -> tuple[str, int]:
+    """Wrap a translated database value to *limit* units; returns (text, lines).
+
+    Lines are split, never joined - except when the result is taller than the
+    field's window shows: then each paragraph is re-flowed (the model's short
+    breaks stop costing a line each) and the shorter layout wins. Blank lines
+    between paragraphs are kept. The original's line ending (CR LF in WOLF
+    databases) is used for new breaks, and text that needs no change is
+    returned untouched, so running this on every load and Save is harmless.
+    """
+    eol = "\r\n" if "\r\n" in (original or "") else "\n"
+    flat = _plain(text)
+    wrapped = wrap_text(flat, limit)
+    if _line_count(wrapped) > max_lines:
+        reflowed = _reflow_paragraphs(flat, limit)
+        if _line_count(reflowed) < _line_count(wrapped):
+            wrapped = reflowed
+    lines = _line_count(wrapped)
+    if wrapped == flat:
+        return text, lines
+    return wrapped.replace("\n", eol), lines
 
 
 # ---------------------------------------------------------------------------
