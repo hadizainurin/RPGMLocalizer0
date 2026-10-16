@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from collections import Counter
 import re
+import unicodedata
 
-from src.core.text_segmenter import SegmentType, segment_text
+from src.core.text_segmenter import SegmentType, _TSS_WORD, segment_text
 
 
 _PLACEHOLDER_RE = re.compile(r"\$\{[^{}]+\}|\{[A-Za-z_][A-Za-z_0-9]*\}|%(?:\d+\$)?[sdif]")
@@ -32,7 +33,36 @@ _DEBRIS_RE = re.compile(
 #: The app's own segment markers. One in a translation means reassembly
 #: failed; the text around it is unreliable (codes moved, parts untranslated).
 _FONT_CODE_RE = re.compile(r"\\f\[\d+\]")
-_INTERNAL_MARKER_RE = re.compile(r"TXT\s*SEG|RPGMSEP|SEP777|ТХЦЭГ|THCEG", re.IGNORECASE)
+#: It also matches the marker's misspellings (TXTSEE, TXTSE, TXTSEP ...: see
+#: ``text_segmenter._TSS_WORD``) and any run of two or more pipes. The check
+#: only fires when the original has none, so a game that really uses "||" is safe.
+_INTERNAL_MARKER_RE = re.compile(_TSS_WORD + r"|RPGMSEP|SEP777|\|{2,}", re.IGNORECASE)
+
+
+#: Punctuation between two game codes: "\\cself[07]_, \\cself[21]". The model
+#: sometimes fills the gap between codes with junk (False Myth 2 item card:
+#: "_,", "_", "}", "|", a stray "%"). Only these characters count as junk; "+",
+#: "[", "-" and the like are real text.
+_CODE_GAP_FULL_RE = re.compile(r"(?<=\])[ \t]*([^\sA-Za-z0-9\\\[\]]{1,3})[ \t]*(?=\\[A-Za-z])")
+_JUNK_GAP_CHARS = set("_|}{^~;,%:")
+_GAP_FOLD = str.maketrans({"。": ".", "、": ",", "【": "[", "】": "]", "「": '"', "」": '"'})
+
+
+def _code_gaps(text: str) -> Counter:
+    gaps: Counter = Counter()
+    for m in _CODE_GAP_FULL_RE.finditer(text):
+        gaps[unicodedata.normalize("NFKC", m.group(1)).translate(_GAP_FOLD)] += 1
+    return gaps
+
+
+def stray_between_codes(original: str, translated: str) -> bool:
+    """True if junk punctuation sits between two codes where the original has none.
+
+    "\\cself[07] \\cself[21]" came back as "\\cself[07]_, \\cself[21]". A gap the
+    original also has ("％" before "\\c[00]" becoming "%") is fine.
+    """
+    extra = _code_gaps(translated) - _code_gaps(original)
+    return any(set(gap) & _JUNK_GAP_CHARS for gap in extra)
 
 
 def breaks_game(original: str, translated: str) -> bool:
@@ -185,7 +215,8 @@ def translation_issues(original: str, translated: str) -> list[str]:
     if _INTERNAL_MARKER_RE.search(translated) and not _INTERNAL_MARKER_RE.search(original):
         issues.append("internal separator left in text")
     if ((_DEBRIS_RE.search(translated) and not _DEBRIS_RE.search(original))
-            or (("{" in translated or "}" in translated) and "{" not in original and "}" not in original)):
+            or (("{" in translated or "}" in translated) and "{" not in original and "}" not in original)
+            or stray_between_codes(original, translated)):
         issues.append("reply debris in text")
     # Every word gone, codes left: "\\c[02]\\f[24]\\A+\\n" for a three-line message.
     if (_CJK_RE.search(_visible(original)) and convert_sound_only(original) is None

@@ -65,6 +65,11 @@ class SettingsBackend(QObject):
             "editor_font_shrink": True,
             "editor_min_font": 18,
             "editor_default_font": 0,
+            # Width, in characters, of the narrow windows that draw short labels
+            # (stat names on an item card). Short one-line string texts wider
+            # than this get a smaller font (never below editor_min_font).
+            # 0 = off.
+            "editor_label_chars": 0,
             # config.json only. Multi-line database text (descriptions, hints,
             # tutorials) is wrapped to the width of its own field; false = off.
             "editor_wrap_db_text": True,
@@ -553,6 +558,14 @@ class SettingsBackend(QObject):
     @editorMinFont.setter
     def editorMinFont(self, val: int) -> None:
         self._set("editor_min_font", max(8, min(64, int(val))))
+
+    @pyqtProperty(int, notify=settingsChanged)
+    def editorLabelChars(self) -> int:
+        return max(0, min(120, int(self._get("editor_label_chars", 0) or 0)))
+
+    @editorLabelChars.setter
+    def editorLabelChars(self, val: int) -> None:
+        self._set("editor_label_chars", max(0, min(120, int(val))))
 
     @pyqtProperty(int, notify=settingsChanged)
     def editorDefaultFont(self) -> int:

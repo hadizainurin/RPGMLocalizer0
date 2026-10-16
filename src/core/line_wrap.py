@@ -434,3 +434,36 @@ def fit_message(text: str, limit: int, max_lines: int, keep_first: bool,
         if n <= cap:
             return scale_font(cand, base_size, size), n, size
     return wrapped, lines, base_size
+
+
+def is_label(original: str, limit: int) -> bool:
+    """True for a short Japanese label: every line is at most *limit* units wide.
+
+    These are texts the game draws in a narrow window (stat names on an item
+    card). The author's own line shows the window is at least that wide, but a
+    label setting says how wide it really is, so such a text is fitted to it.
+    """
+    if not original or not _CJK_RE.search(original):
+        return False
+    return max(text_width(line) for line in original.split("\n")) <= limit
+
+
+def fit_label(text: str, limit: int, base_size: int, min_size: int) -> tuple[str, int, bool]:
+    """Fit a label into *limit* characters per line by font size alone.
+
+    A label sits in a one-line slot, so it is never wrapped (a second line
+    would land on the next label). The largest size from *base_size* down to
+    *min_size* at which its widest line fits wins; at size s a line holds
+    base/s times more characters. Returns (text, size, fits). When nothing
+    fits the smallest size is used and *fits* is False. Text that already fits
+    is returned unchanged.
+    """
+    width = max(text_width(line) for line in text.split("\n"))
+    if width <= limit or not base_size:
+        return text, base_size, width <= limit
+    for size in range(base_size - 1, min_size - 1, -1):
+        if width * size <= limit * base_size:
+            return scale_font(text, base_size, size), size, True
+    if min_size < base_size:
+        return scale_font(text, base_size, min_size), min_size, False
+    return text, base_size, False

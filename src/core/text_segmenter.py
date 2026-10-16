@@ -36,7 +36,16 @@ TEXT_SEGMENT_SEPARATOR = "|||TXTSEG|||"
 
 # Canonical form for splitting (handles optional spaces and transliterations like ТХЦЭГь/THCEG)
 # The marker word itself, as models have been seen to return it.
-_TSS_WORD = r"(?:TXT\s*SEG|TEXT\s*SEG|ТХЦЭГ\w*|THCEG)"
+#
+# The 12B local model also misspells it: TXTSEE, TXTSEEG, TXTSE, TXTSEP,
+# TXTSEMNT, TXTSPNT, TXTSEグ, TEXTSEG ... (False Myth 2, 2026-10-11, "Magic
+# Attack Power |||TXTSEE|||" reached the game). The misspelling always starts
+# with the capitals TXTS / TEXTS, so that prefix plus a short run of capitals
+# (and at most a katakana or a lower-case "g") is the marker. It is
+# case-sensitive on purpose: "text structure" must survive. The tail stops at
+# the first lower-case letter, so "TXTSEグProtect" keeps the word "Protect".
+_TSS_WORD = (r"(?:TXT\s*SEG|TEXT\s*SEG|(?-i:TE?XTS[A-Z]{0,5}[g\u30a0-\u30ff]{0,2})"
+             r"|ТХЦЭГ\w*|THCEG)")
 # Local models sometimes drop pipes: "[|||TXTSEG||+|||TXTSEG|]" came back for
 # "【|||TXTSEG|||＋|||TXTSEG|||】" (False Myth 2). Requiring exactly three on
 # each side made the split fail, the fallback placed every code at the end,
@@ -49,9 +58,12 @@ _TSS_CANONICAL_RE = re.compile(
 )
 _TSS_SCRUB_RE = re.compile(
     r"\|{0,3}\s*" + _TSS_WORD + r"\s*\|{0,3}"
-    r"|\|\s*\|\s*\|[^|\n]*\|\s*\|\s*\||\|{3}[^|\n]*\|{3}",
+    r"|\|\s*\|\s*\|[^|\n]*\|\s*\|\s*\||\|{3}[^|\n]*\|{3}"
+    r"|\|{2,}",     # what is left of a marker whose word was lost: "||", "|||"
     re.IGNORECASE,
 )
+#: True for anything the scrubber would remove (decides whether it must run).
+_TSS_LEAK_RE = re.compile(_TSS_WORD + r"|\|{2,}", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Code pattern — reuse the battle-tested regex from syntax_guard_rpgm
@@ -202,7 +214,7 @@ def reassemble(translated_clean: str, segments: List[Segment]) -> str:
         res = _proportional_reinsert(translated_clean, segments)
 
     # Scrubber: Separator markers should NEVER leak into final game text under any circumstances
-    if "|||" in res or "TXTSEG" in res or "ТХЦЭГ" in res or "THCEG" in res:
+    if _TSS_LEAK_RE.search(res):
         res = _TSS_SCRUB_RE.sub("", res)
         res = re.sub(r"  +", " ", res).strip()
 

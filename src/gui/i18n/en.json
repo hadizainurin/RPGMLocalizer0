@@ -74,6 +74,8 @@
     "editor_font_shrink_desc": "If a message still has more lines than the window after wrapping, lower its font size (\\f[n]) just enough to fit.",
     "editor_min_font_label": "Smallest Font Size",
     "editor_default_font_label": "Normal Message Font Size",
+    "editor_label_chars_label": "Short Label Width (Characters)",
+    "editor_label_chars_hint": "For short one-line labels the game draws in a narrow window (stat names on an item card). A label whose Japanese is no wider than this, and whose English is wider, gets a smaller font, never below Smallest Font Size. Labels are never wrapped. Rows that still do not fit are listed under Warnings. 0 = off. Needs the two options above.",
     "max_tokens_label": "Max Output Tokens",
     "max_tokens_auto_hint": "0 = no limit sent; llama-server uses its own -n / n_predict (default: until the reply ends or the context fills). Recommended. This is a ceiling, not a speed setting.",
     "max_tokens_manual_hint": "Fixed cap sent to the server. Too low truncates a merged batch, which fails to parse and costs more in retries than it saves.",

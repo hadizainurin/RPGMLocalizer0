@@ -1234,7 +1234,7 @@ class EditorStore:
 
     def apply_line_wrap(self, char_limit: int = 0, shrink_font: bool = False,
                         min_font: int = 18, default_font: int = 0,
-                        db_text: bool = True) -> dict[str, int]:
+                        db_text: bool = True, label_chars: int = 0) -> dict[str, int]:
         """Wrap translated message lines and database text to their windows.
 
         Two passes, merged into one result:
@@ -1243,8 +1243,11 @@ class EditorStore:
           hints and tutorials, each field wrapped to the width of its own window.
         ``"wrapped"`` counts the rows of both; ``"db_wrapped"`` and
         ``"db_too_tall"`` are the database part. ``db_text=False`` skips it.
+        *label_chars* (0 = off) is the width of narrow label windows: short
+        ``string_op`` texts are fitted to it by font size (``fit_label``).
         """
-        result = self._apply_message_wrap(char_limit, shrink_font, min_font, default_font)
+        result = self._apply_message_wrap(char_limit, shrink_font, min_font, default_font,
+                                          label_chars)
         db = self._apply_db_text_wrap() if db_text else {"wrapped": 0, "too_tall": 0}
         result["wrapped"] += db["wrapped"]
         result["db_wrapped"] = db["wrapped"]
@@ -1308,7 +1311,8 @@ class EditorStore:
         return result
 
     def _apply_message_wrap(self, char_limit: int = 0, shrink_font: bool = False,
-                            min_font: int = 18, default_font: int = 0) -> dict[str, int]:
+                            min_font: int = 18, default_font: int = 0,
+                            label_chars: int = 0) -> dict[str, int]:
         """Re-break translated message lines that are too wide for the window.
 
         Only WOLF message text is touched (see ``line_wrap.should_wrap``).
@@ -1326,12 +1330,19 @@ class EditorStore:
         wrapping gets a smaller font (WOLF \\f[n]), down to *min_font*.
         *default_font* is the size of messages with no \\f code (0 = the
         most common \\f size in the game). ``"shrunk"`` counts those rows.
+
+        *label_chars* > 0: a ``string_op`` row whose Japanese lines are all at
+        most that wide is a label in a narrow window. It is not wrapped; its
+        font is shrunk until the widest line fits *label_chars* (never below
+        *min_font*; needs *shrink_font*). ``"label_shrunk"`` counts them and
+        ``"label_too_wide"`` those that still do not fit (a warning on the row).
         """
         from src.core.line_wrap import (
-            DEFAULT_MAX_LINES, fit_message, font_size, has_speaker_line, learn_width,
-            restore_font_codes, should_wrap, wrap_text,
+            DEFAULT_MAX_LINES, fit_label, fit_message, font_size, has_speaker_line, is_label,
+            learn_width, restore_font_codes, should_wrap, wrap_text,
         )
-        result = {"wrapped": 0, "too_tall": 0, "limit": 0, "shrunk": 0}
+        result = {"wrapped": 0, "too_tall": 0, "limit": 0, "shrunk": 0,
+                  "label_shrunk": 0, "label_too_wide": 0}
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(
@@ -1347,10 +1358,32 @@ class EditorStore:
             normal_font = default_font or (width.ref_size if width else 0) or 0
             result["limit"] = char_limit if char_limit > 0 else width.limit_for("")
             tall_note = "More lines than the message window shows"
+            wide_note = "Wider than the label window"
             updates: list[tuple] = []
             for r in rows:
                 orig, text = r["original_text"], r["translated_text"]
                 if not text or text == orig:
+                    continue
+                if label_chars > 0 and r["tag"] == "string_op" and is_label(orig, label_chars):
+                    base_text = restore_font_codes(orig, text)
+                    base = font_size(orig) or normal_font
+                    if shrink_font and base:
+                        new, size, fits = fit_label(base_text, label_chars, base, min_font)
+                    else:                                   # nothing to shrink with: just report
+                        new, size, fits = fit_label(base_text, label_chars, 0, 0)
+                    if new != base_text:
+                        result["label_shrunk"] += 1
+                    msg = " | ".join(part for part in (r["warning_msg"] or "").split(" | ")
+                                     if part and not part.startswith(wide_note))
+                    if not fits:
+                        result["label_too_wide"] += 1
+                        msg = f"{msg} | {wide_note} ({label_chars} chars)" if msg else f"{wide_note} ({label_chars} chars)"
+                    if new == text and msg == (r["warning_msg"] or ""):
+                        continue
+                    if new != text:
+                        result["wrapped"] += 1
+                    updates.append((new, 1 if new != text else r["is_modified"],
+                                    new.count("\n") + 1, 1 if msg else 0, msg, r["id"]))
                     continue
                 limit = char_limit if char_limit > 0 else width.limit_for(orig)
                 max_lines = max(DEFAULT_MAX_LINES, orig.count("\n") + 1)

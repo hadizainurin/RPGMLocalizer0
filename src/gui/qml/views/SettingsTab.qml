@@ -855,6 +855,22 @@ Item {
                             value: settingsBackend.editorDefaultFont
                             onMoved: (val) => { settingsBackend.editorDefaultFont = Math.round(val) }
                         }
+                        StyledSlider {
+                            label: localeManager.strings.settings.editor_label_chars_label || "Short Label Width (Characters)"
+                            from: 0; to: 120; step: 1
+                            editable: true
+                            zeroText: localeManager.strings.common.off || "Off"
+                            enabled: settingsBackend.editorWordwrap && settingsBackend.editorFontShrink
+                            value: settingsBackend.editorLabelChars
+                            onMoved: (val) => { settingsBackend.editorLabelChars = Math.round(val) }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: localeManager.strings.settings.editor_label_chars_hint || "For short one-line labels the game draws in a narrow window (stat names on an item card). A label whose Japanese is no wider than this, and whose English is wider, gets a smaller font, never below Smallest Font Size. Labels are never wrapped. Rows that still do not fit are listed under Warnings. 0 = off. Needs the two options above."
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: t ? t.textMuted : "#55556a"
+                        }
                         Rectangle { Layout.fillWidth: true; height: 1; color: t ? t.border1 : "#2e2e3e" }
                         ToggleRow {
                             label: localeManager.strings.settings.translate_notes_label

@@ -212,6 +212,7 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
             # config.json only (no settings screen): database text is wrapped to
             # the width of its own field; set false if a game draws it itself.
             db_text=bool(settings.get("editor_wrap_db_text", True)),
+            label_chars=int(settings.get("editor_label_chars", 0) or 0),
         )
     except Exception as exc:  # a wrap problem must never block loading or saving
         if logger:
@@ -219,6 +220,10 @@ def apply_editor_wrap(store: Any, settings: dict[str, Any], logger: Any = None) 
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
     if not isinstance(result, dict):   # store without a wrap pass (or a stand-in)
         return {"wrapped": 0, "too_tall": 0, "limit": 0}
+    if logger and (result.get("label_shrunk") or result.get("label_too_wide")):
+        logger.info("Label fit (%d chars): %d labels in a smaller font, %d still wider than the window.",
+                    int(settings.get("editor_label_chars", 0) or 0),
+                    result.get("label_shrunk", 0), result.get("label_too_wide", 0))
     if logger and (result["wrapped"] or result["too_tall"] or result.get("db_too_tall")):
         logger.info("Word-wrap (%d chars/line): %d rows wrapped (%d database texts), %d in a "
                     "smaller font, %d messages and %d database texts still taller than the window.",
